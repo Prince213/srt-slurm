@@ -56,4 +56,3 @@ configs/*.tar.gz
 configs/dg-*
 configs/flashinfer-cache/
 outputs/*
-sflow_recipes/*

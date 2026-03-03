@@ -130,7 +130,7 @@ variables:
     value: dynamo-trtllm
 artifacts:
 - name: LOCAL_MODEL_PATH
-  uri: fs:///${{ variables.MODEL_PATH }}
+  uri: fs://${{ variables.MODEL_PATH }}
 - name: PREFILL_CONFIG
   uri: file://prefill_config.yaml
   content: "max_batch_size: 16\nmax_num_tokens: 16384\nmax_seq_len: 2048\ntensor_parallel_size: 2\nmoe_expert_parallel_size:\

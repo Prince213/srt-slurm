@@ -127,7 +127,7 @@ variables:
     value: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.8.1.post3
 artifacts:
 - name: LOCAL_MODEL_PATH
-  uri: fs:///${{ variables.MODEL_PATH }}
+  uri: fs://${{ variables.MODEL_PATH }}
 - name: PREFILL_CONFIG
   uri: file://prefill_config.yaml
   content: "max_batch_size: 2\nmax_num_tokens: 2048\nmax_seq_len: 2048\ntensor_parallel_size: 16\nmoe_expert_parallel_size:\

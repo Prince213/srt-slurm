@@ -127,7 +127,7 @@ variables:
     value: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.8.1.post1
 artifacts:
 - name: LOCAL_MODEL_PATH
-  uri: fs:///${{ variables.MODEL_PATH }}
+  uri: fs://${{ variables.MODEL_PATH }}
 - name: PREFILL_CONFIG
   uri: file://prefill_config.yaml
   content: "backend: pytorch\ntrust_remote_code: true\ntensor_parallel_size: 8\nmoe_expert_parallel_size: 8\npipeline_parallel_size:\

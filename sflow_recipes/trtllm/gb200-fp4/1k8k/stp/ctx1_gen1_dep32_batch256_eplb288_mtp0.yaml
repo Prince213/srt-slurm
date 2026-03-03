@@ -127,7 +127,7 @@ variables:
     value: dynamo-trtllm
 artifacts:
 - name: LOCAL_MODEL_PATH
-  uri: fs:///${{ variables.MODEL_PATH }}
+  uri: fs://${{ variables.MODEL_PATH }}
 - name: PREFILL_CONFIG
   uri: file://prefill_config.yaml
   content: "cache_transceiver_config:\n  backend: UCX\n  max_tokens_in_buffer: 16384\ncuda_graph_config: null\ndisable_overlap_scheduler:\

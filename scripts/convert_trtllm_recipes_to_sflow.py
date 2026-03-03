@@ -40,7 +40,9 @@ def _concurrency_domain(concurrencies) -> list[int]:
 
 def _yaml_to_literal_block(obj: dict) -> str:
     """Dump YAML dict to a string for artifact content (PyYAML will emit as block scalar)."""
-    return yaml.dump(obj, default_flow_style=False, allow_unicode=True, sort_keys=False).rstrip()
+    return yaml.dump(
+        obj, default_flow_style=False, allow_unicode=True, sort_keys=False
+    ).rstrip()
 
 
 def convert_recipe(recipe_path: Path, data: dict) -> dict:
@@ -96,33 +98,104 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         "SLURM_TIMELIMIT": {"description": "SLURM time limit", "value": 120},
         "GPUS_PER_NODE": {"description": "GPUs per node", "value": gpus_per_node},
         "SLURM_NODES": {"description": "Number of nodes", "value": slurm_nodes},
-        "SERVED_MODEL_NAME": {"description": "Served model name", "value": served_model_name},
+        "SERVED_MODEL_NAME": {
+            "description": "Served model name",
+            "value": served_model_name,
+        },
         "MODEL_PATH": {"description": "Model path (fs or name)", "value": model_path},
-        "NUM_CTX_SERVERS": {"description": "Number of context/prefill servers", "value": prefill_workers},
+        "NUM_CTX_SERVERS": {
+            "description": "Number of context/prefill servers",
+            "value": prefill_workers,
+        },
         "CTX_TP_SIZE": {"description": "Context tensor parallel size", "value": ctx_tp},
         "CTX_DP_SIZE": {"description": "Context data parallel size", "value": 1},
         "CTX_EP_SIZE": {"description": "Context expert parallel size", "value": 1},
-        "CTX_MOE_TP_SIZE": {"description": "Context MOE tensor parallel size", "value": ctx_tp},
-        "CTX_PP_SIZE": {"description": "Context pipeline parallel size", "value": int(prefill_cfg.get("pipeline_parallel_size", 1))},
-        "CTX_REPLICAS_POLICY": {"description": "Context replicas policy", "value": "parallel"},
-        "CTX_BATCH_SIZE": {"description": "Context batch size", "value": int(prefill_cfg.get("max_batch_size", 128))},
-        "CTX_MAX_NUM_TOKENS": {"description": "Context max number of tokens", "value": int(prefill_cfg.get("max_num_tokens", 4096))},
-        "CTX_MAX_SEQ_LEN": {"description": "Context max sequence length", "value": int(prefill_cfg.get("max_seq_len", 1280))},
-        "CTX_FREE_GPU_MEMORY_FRACTION": {"description": "Context free GPU memory fraction", "value": float(prefill_cfg.get("kv_cache_config", {}).get("free_gpu_memory_fraction", 0.9))},
-        "CTX_ENABLE_ATTENTION_DP": {"description": "Context enable attention DP", "value": prefill_cfg.get("enable_attention_dp", False)},
-        "KV_CACHE_DTYPE": {"description": "KV cache dtype", "value": prefill_cfg.get("kv_cache_config", {}).get("dtype", "fp8")},
-        "NUM_GEN_SERVERS": {"description": "Number of generation/decode servers", "value": decode_workers},
-        "GEN_TP_SIZE": {"description": "Generation tensor parallel size", "value": gen_tp},
+        "CTX_MOE_TP_SIZE": {
+            "description": "Context MOE tensor parallel size",
+            "value": ctx_tp,
+        },
+        "CTX_PP_SIZE": {
+            "description": "Context pipeline parallel size",
+            "value": int(prefill_cfg.get("pipeline_parallel_size", 1)),
+        },
+        "CTX_REPLICAS_POLICY": {
+            "description": "Context replicas policy",
+            "value": "parallel",
+        },
+        "CTX_BATCH_SIZE": {
+            "description": "Context batch size",
+            "value": int(prefill_cfg.get("max_batch_size", 128)),
+        },
+        "CTX_MAX_NUM_TOKENS": {
+            "description": "Context max number of tokens",
+            "value": int(prefill_cfg.get("max_num_tokens", 4096)),
+        },
+        "CTX_MAX_SEQ_LEN": {
+            "description": "Context max sequence length",
+            "value": int(prefill_cfg.get("max_seq_len", 1280)),
+        },
+        "CTX_FREE_GPU_MEMORY_FRACTION": {
+            "description": "Context free GPU memory fraction",
+            "value": float(
+                prefill_cfg.get("kv_cache_config", {}).get(
+                    "free_gpu_memory_fraction", 0.9
+                )
+            ),
+        },
+        "CTX_ENABLE_ATTENTION_DP": {
+            "description": "Context enable attention DP",
+            "value": prefill_cfg.get("enable_attention_dp", False),
+        },
+        "KV_CACHE_DTYPE": {
+            "description": "KV cache dtype",
+            "value": prefill_cfg.get("kv_cache_config", {}).get("dtype", "fp8"),
+        },
+        "NUM_GEN_SERVERS": {
+            "description": "Number of generation/decode servers",
+            "value": decode_workers,
+        },
+        "GEN_TP_SIZE": {
+            "description": "Generation tensor parallel size",
+            "value": gen_tp,
+        },
         "GEN_DP_SIZE": {"description": "Generation data parallel size", "value": 1},
         "GEN_EP_SIZE": {"description": "Generation expert parallel size", "value": 1},
-        "GEN_MOE_TP_SIZE": {"description": "Generation MOE tensor parallel size", "value": gen_tp},
-        "GEN_PP_SIZE": {"description": "Generation pipeline parallel size", "value": int(decode_cfg.get("pipeline_parallel_size", 1))},
-        "GEN_REPLICAS_POLICY": {"description": "Generation replicas policy", "value": "parallel"},
-        "GEN_BATCH_SIZE": {"description": "Generation batch size", "value": int(decode_cfg.get("max_batch_size", 128))},
-        "GEN_MAX_NUM_TOKENS": {"description": "Generation max number of tokens", "value": int(decode_cfg.get("max_num_tokens", 4096))},
-        "GEN_MAX_SEQ_LEN": {"description": "Generation max sequence length", "value": int(decode_cfg.get("max_seq_len", 2304))},
-        "GEN_FREE_GPU_MEMORY_FRACTION": {"description": "Generation free GPU memory fraction", "value": float(decode_cfg.get("kv_cache_config", {}).get("free_gpu_memory_fraction", 0.9))},
-        "GEN_ENABLE_ATTENTION_DP": {"description": "Generation enable attention DP", "value": decode_cfg.get("enable_attention_dp", False)},
+        "GEN_MOE_TP_SIZE": {
+            "description": "Generation MOE tensor parallel size",
+            "value": gen_tp,
+        },
+        "GEN_PP_SIZE": {
+            "description": "Generation pipeline parallel size",
+            "value": int(decode_cfg.get("pipeline_parallel_size", 1)),
+        },
+        "GEN_REPLICAS_POLICY": {
+            "description": "Generation replicas policy",
+            "value": "parallel",
+        },
+        "GEN_BATCH_SIZE": {
+            "description": "Generation batch size",
+            "value": int(decode_cfg.get("max_batch_size", 128)),
+        },
+        "GEN_MAX_NUM_TOKENS": {
+            "description": "Generation max number of tokens",
+            "value": int(decode_cfg.get("max_num_tokens", 4096)),
+        },
+        "GEN_MAX_SEQ_LEN": {
+            "description": "Generation max sequence length",
+            "value": int(decode_cfg.get("max_seq_len", 2304)),
+        },
+        "GEN_FREE_GPU_MEMORY_FRACTION": {
+            "description": "Generation free GPU memory fraction",
+            "value": float(
+                decode_cfg.get("kv_cache_config", {}).get(
+                    "free_gpu_memory_fraction", 0.9
+                )
+            ),
+        },
+        "GEN_ENABLE_ATTENTION_DP": {
+            "description": "Generation enable attention DP",
+            "value": decode_cfg.get("enable_attention_dp", False),
+        },
         "EXTRA_FRONTEND_ARGS": {"description": "Extra frontend arguments", "value": ""},
         "EXTRA_PREFILL_ARGS": {"description": "Extra prefill arguments", "value": ""},
         "EXTRA_DECODE_ARGS": {"description": "Extra decode arguments", "value": ""},
@@ -134,15 +207,21 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
             "value": concurrency_domain[0],
             "domain": concurrency_domain,
         },
-        "AIPERF_IMAGE": {"description": "AIPerf container image", "value": aiperf_image},
-        "DYNAMO_IMAGE": {"description": "Dynamo TRTLLM container image", "value": container},
+        "AIPERF_IMAGE": {
+            "description": "AIPerf container image",
+            "value": aiperf_image,
+        },
+        "DYNAMO_IMAGE": {
+            "description": "Dynamo TRTLLM container image",
+            "value": container,
+        },
     }
 
     # Artifacts: LOCAL_MODEL_PATH, PREFILL_CONFIG, DECODE_CONFIG (literal from recipe to preserve all options)
     if "/" in model_path and not model_path.startswith(("fs://", "file://")):
-        model_uri = f"fs:///{model_path}"
+        model_uri = f"fs://{model_path}"
     else:
-        model_uri = "fs:///${{ variables.MODEL_PATH }}"
+        model_uri = "fs://${{ variables.MODEL_PATH }}"
     artifacts = [
         {"name": "LOCAL_MODEL_PATH", "uri": model_uri},
         {

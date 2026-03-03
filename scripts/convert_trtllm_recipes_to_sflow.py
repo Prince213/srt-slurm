@@ -32,14 +32,10 @@ def _parse_concurrencies(concurrencies) -> list[int]:
     return [int(s)]
 
 
-def _concurrency_value(concurrencies) -> int:
+def _concurrency_domain(concurrencies) -> list[int]:
+    """Always return concurrency as a list (domain), even for a single value."""
     values = _parse_concurrencies(concurrencies)
-    return values[0] if values else 50
-
-
-def _concurrency_domain(concurrencies) -> list[int] | None:
-    values = _parse_concurrencies(concurrencies)
-    return values if len(values) > 1 else None
+    return values if values else [50]
 
 
 def _yaml_to_literal_block(obj: dict) -> str:
@@ -83,7 +79,6 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
     isl = int(benchmark.get("isl", 1024))
     osl = int(benchmark.get("osl", 1024))
     concurrencies = benchmark.get("concurrencies", "50")
-    concurrency = _concurrency_value(concurrencies)
     concurrency_domain = _concurrency_domain(concurrencies)
 
     gpu_type = str(resources.get("gpu_type", "")).lower()
@@ -134,12 +129,14 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         "ISL": {"description": "Input sequence length", "value": isl},
         "OSL": {"description": "Output sequence length", "value": osl},
         "MULTI_ROUND": {"description": "Number of benchmark rounds", "value": 8},
-        "CONCURRENCY": {"description": "Concurrency", "value": concurrency},
+        "CONCURRENCY": {
+            "description": "Concurrency",
+            "value": concurrency_domain[0],
+            "domain": concurrency_domain,
+        },
         "AIPERF_IMAGE": {"description": "AIPerf container image", "value": aiperf_image},
         "DYNAMO_IMAGE": {"description": "Dynamo TRTLLM container image", "value": container},
     }
-    if concurrency_domain:
-        variables["CONCURRENCY"]["domain"] = concurrency_domain
 
     # Artifacts: LOCAL_MODEL_PATH, PREFILL_CONFIG, DECODE_CONFIG (literal from recipe to preserve all options)
     if "/" in model_path and not model_path.startswith(("fs://", "file://")):

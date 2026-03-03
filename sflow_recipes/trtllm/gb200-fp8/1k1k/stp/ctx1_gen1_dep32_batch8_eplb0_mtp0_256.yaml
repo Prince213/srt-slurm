@@ -117,6 +117,8 @@ variables:
   CONCURRENCY:
     description: Concurrency
     value: 256
+    domain:
+    - 256
   AIPERF_IMAGE:
     description: AIPerf container image
     value: gitlab-master.nvidia.com/perflab-compute/unified-benchmarks/aiperf:0.3.0-arm

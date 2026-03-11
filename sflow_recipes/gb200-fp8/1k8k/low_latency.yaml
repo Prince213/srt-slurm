@@ -85,9 +85,9 @@ variables:
   EXTRA_DECODE_ARGS:
     description: Extra decode arguments
     value: ''
-  SGLANG_IMAGE:
+  DYNAMO_IMAGE:
     description: SGLang container image
-    value: dynamo-sglang
+    value: lmsysorg/sglang:v0.5.8.post1-cu130
   NUM_FRONTENDS:
     description: Number of frontend instances
     value: 3
@@ -138,7 +138,7 @@ backends:
 operators:
 - name: dynamo_sglang
   type: srun
-  container_image: ${{ variables.SGLANG_IMAGE }}
+  container_image: ${{ variables.DYNAMO_IMAGE }}
   container_writable: true
   mpi: pmix
 - name: nginx

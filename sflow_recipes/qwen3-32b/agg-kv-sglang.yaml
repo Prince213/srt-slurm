@@ -51,9 +51,9 @@ variables:
   EXTRA_AGG_ARGS:
     description: Extra aggregated server arguments
     value: ''
-  SGLANG_IMAGE:
+  DYNAMO_IMAGE:
     description: SGLang container image
-    value: 0.5.6.post2
+    value: lmsysorg/sglang:v0.5.8.post1-cu130
   NUM_FRONTENDS:
     description: Number of frontend instances
     value: 1
@@ -75,7 +75,7 @@ backends:
 operators:
 - name: dynamo_sglang
   type: srun
-  container_image: ${{ variables.SGLANG_IMAGE }}
+  container_image: ${{ variables.DYNAMO_IMAGE }}
   container_writable: true
   mpi: pmix
 - name: aiperf

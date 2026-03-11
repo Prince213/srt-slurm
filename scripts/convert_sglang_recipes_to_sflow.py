@@ -215,12 +215,13 @@ def _is_aggregated_recipe(data: dict) -> bool:
 
 def _sglang_container(model: dict) -> str:
     """Resolve the SGLang container image from the model config."""
-    container = model.get("container", "")
-    if not container:
-        return "lmsysorg/sglang:v0.5.8-runtime"
-    if "/" in container or ":" in container:
-        return container.replace("#", "/", 1)
-    return container
+    return "lmsysorg/sglang:v0.5.8.post1-cu130"
+    # container = model.get("container", "")
+    # if not container:
+    #     return "lmsysorg/sglang:v0.5.8.post1-cu130"
+    # if "/" in container or ":" in container:
+    #     return container.replace("#", "/", 1)
+    # return container
 
 
 def _get_frontend_config(data: dict, slurm_nodes: int) -> tuple[bool, int, str]:
@@ -425,7 +426,7 @@ def _build_operators(*, enable_multi_frontend: bool) -> list[dict]:
         {
             "name": "dynamo_sglang",
             "type": "srun",
-            "container_image": "${{ variables.SGLANG_IMAGE }}",
+            "container_image": "${{ variables.DYNAMO_IMAGE }}",
             "container_writable": True,
             "mpi": "pmix",
         },
@@ -801,7 +802,7 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
                 "value": "",
             },
             "EXTRA_DECODE_ARGS": {"description": "Extra decode arguments", "value": ""},
-            "SGLANG_IMAGE": {
+            "DYNAMO_IMAGE": {
                 "description": "SGLang container image",
                 "value": container,
             },
@@ -978,7 +979,7 @@ def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
                 "description": "Extra aggregated server arguments",
                 "value": "",
             },
-            "SGLANG_IMAGE": {
+            "DYNAMO_IMAGE": {
                 "description": "SGLang container image",
                 "value": container,
             },

@@ -421,10 +421,6 @@ workflow:
         log_watch:
           regex_pattern: Traceback (most recent call last)
         interval: 10
-    retries:
-      count: 3
-      interval: 30
-      backoff: 2
   - name: decode_server
     operator:
       name: dynamo_sglang
@@ -494,10 +490,6 @@ workflow:
         log_watch:
           regex_pattern: Traceback (most recent call last)
         interval: 10
-    retries:
-      count: 3
-      interval: 30
-      backoff: 2
   - name: benchmark
     operator:
       name: aiperf

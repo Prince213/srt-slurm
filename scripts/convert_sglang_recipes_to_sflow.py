@@ -645,7 +645,6 @@ def _build_worker_task(
                 "interval": 10,
             },
         },
-        "retries": {"count": 3, "interval": 30, "backoff": 2},
     }
 
 

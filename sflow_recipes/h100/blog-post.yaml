@@ -347,8 +347,8 @@ workflow:
       --disaggregation-mode prefill --skip-tokenizer-init --trust-remote-code --load-balance-method round_robin --tp-size
       16 --dp-size 16 --ep-size 16 --enable-dp-attention --host 0.0.0.0 --watchdog-timeout 1000000 --disable-radix-cache --mem-fraction-static
       0.85 --moe-a2a-backend deepep --deepep-mode normal --ep-dispatch-algorithm static --moe-dense-tp-size 1 --enable-dp-lm-head
-      --ep-num-redundant-experts 32 --eplb-algorithm deepseek --disaggregation-bootstrap-port $(python3 -c "import socket;
-      s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+      --ep-num-redundant-experts 32 --eplb-algorithm deepseek --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE}))
+      ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -406,9 +406,8 @@ workflow:
       --disaggregation-mode decode --skip-tokenizer-init --trust-remote-code --prefill-round-robin-balance --tp-size 16 --dp-size
       16 --ep-size 16 --enable-dp-attention --host 0.0.0.0 --watchdog-timeout 1000000 --disable-radix-cache --mem-fraction-static
       0.835 --cuda-graph-bs 64 --moe-a2a-backend deepep --deepep-mode low_latency --ep-dispatch-algorithm static --moe-dense-tp-size
-      1 --enable-dp-lm-head --ep-num-redundant-experts 32 --eplb-algorithm deepseek --disaggregation-bootstrap-port $(python3
-      -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
-      --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      1 --enable-dp-lm-head --ep-num-redundant-experts 32 --eplb-algorithm deepseek --disaggregation-bootstrap-port $((8998
+      + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

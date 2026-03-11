@@ -413,8 +413,7 @@ workflow:
       deepseek --mem-fraction-static 0.84 --max-total-tokens 131072 --max-prefill-tokens 32768 --chunked-prefill-size 65536
       --enable-single-batch-overlap --max-running-requests 30000 --load-balance-method round_robin --disable-cuda-graph --enable-dp-attention
       --disaggregation-transfer-backend nixl --fp4-gemm-backend flashinfer_cutlass --tp-size 4 --dp-size 4 --ep-size 4 --disaggregation-bootstrap-port
-      $(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
-      --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+      $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -490,8 +489,8 @@ workflow:
       168 176 184 192 200 208 216 224 232 240 248 256 264 272 280 288 296 304 312 320 328 336 344 352 360 368 376 384 416
       448 480 512 544 576 608 640 672 704 736 768 1024 --num-reserved-decode-tokens 112 --moe-dense-tp-size 1 --enable-dp-lm-head
       --prefill-round-robin-balance --enable-dp-attention --fp4-gemm-backend flashinfer_cutlass --disaggregation-transfer-backend
-      nixl --tp-size 48 --dp-size 48 --ep-size 48 --disaggregation-bootstrap-port $(python3 -c "import socket; s=socket.socket();
-      s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      nixl --tp-size 48 --dp-size 48 --ep-size 48 --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS}
+      --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

@@ -411,8 +411,7 @@ workflow:
       0.75 --max-total-tokens 524288 --chunked-prefill-size 131072 --load-balance-method round_robin --disable-cuda-graph
       --moe-a2a-backend deepep --deepep-mode normal --ep-dispatch-algorithm dynamic --moe-dense-tp-size 1 --enable-dp-lm-head
       --ep-num-redundant-experts 32 --deepep-config /configs/deepep_config.json --disaggregation-transfer-backend nixl --disaggregation-bootstrap-port
-      $(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
-      --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+      $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -486,8 +485,7 @@ workflow:
       32 --deepep-config /configs/deepep_config.json --cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120
       128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256 264 272 280 288 296 304 312 320 328 336 344 352
       360 368 376 384 416 448 480 512 544 576 608 640 672 704 736 768 --cuda-graph-max-bs 768 --disaggregation-transfer-backend
-      nixl --disaggregation-bootstrap-port $(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]);
-      s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      nixl --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

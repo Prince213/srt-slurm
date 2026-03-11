@@ -340,9 +340,8 @@ workflow:
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode prefill --trust-remote-code --tensor-parallel-size 2 --mem-fraction-static 0.9 --json-model-override-args
       {"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768},"max_position_embeddings":131072}
-      --context-length 131072 --page-size 64 --disaggregation-transfer-backend nixl --disaggregation-bootstrap-port $(python3
-      -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
-      --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+      --context-length 131072 --page-size 64 --disaggregation-transfer-backend nixl --disaggregation-bootstrap-port $((8998
+      + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -399,9 +398,8 @@ workflow:
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode decode --trust-remote-code --tensor-parallel-size 2 --mem-fraction-static 0.9 --json-model-override-args
       {"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768},"max_position_embeddings":131072}
-      --context-length 131072 --page-size 64 --disaggregation-transfer-backend nixl --disaggregation-bootstrap-port $(python3
-      -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
-      --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      --context-length 131072 --page-size 64 --disaggregation-transfer-backend nixl --disaggregation-bootstrap-port $((8998
+      + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

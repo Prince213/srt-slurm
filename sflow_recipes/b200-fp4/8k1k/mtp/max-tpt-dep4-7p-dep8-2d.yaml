@@ -406,8 +406,8 @@ workflow:
       1024 --disable-cuda-graph --tensor-parallel-size 4 --data-parallel-size 4 --expert-parallel-size 4 --enable-dp-attention
       --enable-dp-lm-head --attention-backend trtllm_mla --kv-cache-dtype fp8_e4m3 --moe-runner-backend flashinfer_trtllm
       --moe-dense-tp-size 1 --stream-interval 30 --watchdog-timeout 1000000 --enable-flashinfer-allreduce-fusion --disable-radix-cache
-      --fp4-gemm-backend flashinfer_cutlass --disaggregation-bootstrap-port $(python3 -c "import socket; s=socket.socket();
-      s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+      --fp4-gemm-backend flashinfer_cutlass --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS}
+      --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -481,8 +481,8 @@ workflow:
       --enable-dp-lm-head --attention-backend trtllm_mla --kv-cache-dtype fp8_e4m3 --moe-runner-backend flashinfer_trtllm
       --moe-dense-tp-size 1 --stream-interval 30 --watchdog-timeout 1000000 --enable-flashinfer-allreduce-fusion --disable-radix-cache
       --fp4-gemm-backend flashinfer_cutlass --speculative-algorithm EAGLE --speculative-num-steps 2 --speculative-eagle-topk
-      1 --speculative-num-draft-tokens 3 --disaggregation-bootstrap-port $(python3 -c "import socket; s=socket.socket(); s.bind(('',
-      0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      1 --speculative-num-draft-tokens 3 --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS}
+      --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

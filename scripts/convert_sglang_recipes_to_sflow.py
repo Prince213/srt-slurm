@@ -297,11 +297,7 @@ def _build_sglang_server_script(
     if mode:
         cmd_parts.append(f"--disaggregation-mode {mode}")
     cmd_parts.extend(sglang_cli_args)
-    cmd_parts.append(
-        "--disaggregation-bootstrap-port"
-        ' $(python3 -c "import socket; s=socket.socket();'
-        " s.bind(('', 0)); print(s.getsockname()[1]); s.close()\")"
-    )
+    cmd_parts.append("--disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE}))")
     cmd_parts.append("${MULTI_NODE_EXTRA_ARGS}")
     cmd_parts.append("--host 0.0.0.0")
     cmd_parts.append(f"${{{extra_args_var}}}")

@@ -369,8 +369,7 @@ workflow:
       --max-running-requests 4096 --load-balance-method round_robin --disable-cuda-graph --enable-dp-attention --enable-single-batch-overlap
       --tp-size 4 --dp-size 4 --ep-size 4 --speculative-algorithm EAGLE --speculative-num-steps 2 --speculative-eagle-topk
       1 --speculative-num-draft-tokens 3 --speculative-moe-runner-backend deep_gemm --speculative-moe-a2a-backend deepep --disaggregation-bootstrap-port
-      $(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
-      --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+      $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -455,8 +454,8 @@ workflow:
       224 232 240 248 256 --num-reserved-decode-tokens 224 --moe-dense-tp-size 1 --enable-dp-lm-head --prefill-round-robin-balance
       --enable-dp-attention --enable-single-batch-overlap --tp-size 48 --dp-size 48 --ep-size 48 --speculative-algorithm EAGLE
       --speculative-num-steps 2 --speculative-eagle-topk 1 --speculative-num-draft-tokens 3 --speculative-moe-runner-backend
-      deep_gemm --speculative-moe-a2a-backend deepep --disaggregation-bootstrap-port $(python3 -c "import socket; s=socket.socket();
-      s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      deep_gemm --speculative-moe-a2a-backend deepep --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS}
+      --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

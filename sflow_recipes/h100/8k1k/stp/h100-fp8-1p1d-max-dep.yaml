@@ -343,8 +343,7 @@ workflow:
       --disaggregation-mode prefill --model-path /model/ --skip-tokenizer-init --trust-remote-code --watchdog-timeout 1000000
       --tp-size 16 --dp-size 1 --ep-size 1 --attention-backend flashinfer --disable-radix-cache --max-running-requests 4 --disaggregation-transfer-backend
       nixl --mem-fraction-static 0.6 --max-prefill-tokens 2048 --chunked-prefill-size 2048 --load-balance-method round_robin
-      --disaggregation-bootstrap-port $(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]);
-      s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+      --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -398,8 +397,7 @@ workflow:
       --disaggregation-mode decode --model-path /model/ --skip-tokenizer-init --trust-remote-code --watchdog-timeout 1000000
       --tp-size 16 --dp-size 16 --ep-size 16 --enable-dp-attention --attention-backend flashinfer --disable-radix-cache --stream-interval
       1 --disaggregation-transfer-backend nixl --mem-fraction-static 0.9 --max-running-requests 64 --cuda-graph-max-bs 64
-      --disaggregation-bootstrap-port $(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]);
-      s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

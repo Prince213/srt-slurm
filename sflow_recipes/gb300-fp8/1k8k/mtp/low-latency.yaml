@@ -359,8 +359,7 @@ workflow:
       --max-total-tokens 8192 --chunked-prefill-size 8192 --max-prefill-tokens 8192 --cuda-graph-max-bs 128 --max-running-requests
       128 --load-balance-method round_robin --scheduler-recv-interval 10 --tensor-parallel-size 4 --data-parallel-size 1 --expert-parallel-size
       1 --speculative-algorithm EAGLE --speculative-num-steps 2 --speculative-eagle-topk 1 --speculative-num-draft-tokens
-      3 --disaggregation-bootstrap-port $(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]);
-      s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+      3 --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -434,8 +433,8 @@ workflow:
       10 --watchdog-timeout 1000000 --context-length 9300 --disaggregation-transfer-backend nixl --mem-fraction-static 0.8
       --chunked-prefill-size -1 --cuda-graph-max-bs 128 --max-running-requests 128 --scheduler-recv-interval 1 --prefill-round-robin-balance
       --tensor-parallel-size 4 --data-parallel-size 1 --expert-parallel-size 1 --speculative-algorithm EAGLE --speculative-num-steps
-      2 --speculative-eagle-topk 1 --speculative-num-draft-tokens 3 --disaggregation-bootstrap-port $(python3 -c "import socket;
-      s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      2 --speculative-eagle-topk 1 --speculative-num-draft-tokens 3 --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE}))
+      ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

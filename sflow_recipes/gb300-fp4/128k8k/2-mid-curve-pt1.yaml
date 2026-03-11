@@ -359,8 +359,7 @@ workflow:
       fp8_e4m3 --load-balance-method round_robin --max-total-tokens 544000 --mem-fraction-static 0.95 --moe-dense-tp-size
       1 --moe-runner-backend flashinfer_trtllm --pipeline-parallel-size 4 --quantization modelopt_fp4 --scheduler-recv-interval
       1 --stream-interval 10 --tensor-parallel-size 1 --trust-remote-code --watchdog-timeout 1000000 --disaggregation-bootstrap-port
-      $(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
-      --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+      $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -432,8 +431,7 @@ workflow:
       --expert-parallel-size 4 --kv-cache-dtype fp8_e4m3 --mem-fraction-static 0.95 --moe-dense-tp-size 1 --moe-runner-backend
       flashinfer_trtllm --pipeline-parallel-size 1 --prefill-round-robin-balance --quantization modelopt_fp4 --scheduler-recv-interval
       1 --stream-interval 10 --tensor-parallel-size 4 --trust-remote-code --watchdog-timeout 1000000 --disaggregation-bootstrap-port
-      $(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
-      --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

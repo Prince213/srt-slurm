@@ -561,11 +561,12 @@ def _build_infra_tasks() -> list[dict]:
     ]
 
 
-def _build_nginx_task() -> dict:
+def _build_nginx_task(*, gpu_type: str) -> dict:
+    nginx_bin = "/usr/sbin/nginx" if gpu_type.startswith(("gb200", "gb300")) else "nginx"
     return {
         "name": "nginx_server",
         "operator": "nginx",
-        "script": ["nginx -c ${{ artifacts.NGINX_CONFIG.path }} -g 'daemon off;'"],
+        "script": [f"{nginx_bin} -c ${{{{ artifacts.NGINX_CONFIG.path }}}} -g 'daemon off;'"],
         "resources": {"nodes": {"indices": [0]}},
         "probes": {
             "readiness": {
@@ -860,7 +861,7 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
 
     tasks = _build_infra_tasks()
     if enable_multi:
-        tasks.append(_build_nginx_task())
+        tasks.append(_build_nginx_task(gpu_type=gpu_type))
     tasks.append(_build_frontend_task())
     tasks.append(
         _build_worker_task(
@@ -1023,7 +1024,7 @@ def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
 
     tasks = _build_infra_tasks()
     if enable_multi:
-        tasks.append(_build_nginx_task())
+        tasks.append(_build_nginx_task(gpu_type=gpu_type))
     tasks.append(_build_frontend_task())
     tasks.append(
         _build_worker_task(

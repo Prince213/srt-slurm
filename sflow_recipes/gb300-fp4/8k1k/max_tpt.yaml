@@ -317,7 +317,7 @@ workflow:
   - name: nginx_server
     operator: nginx
     script:
-    - nginx -c ${{ artifacts.NGINX_CONFIG.path }} -g 'daemon off;'
+    - /usr/sbin/nginx -c ${{ artifacts.NGINX_CONFIG.path }} -g 'daemon off;'
     resources:
       nodes:
         indices:

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-Convert srtslurm recipes under recipes/ to sflow format.
+Convert srtslurm SGLang recipes under recipes/ (excluding trtllm/) to sflow format
+following the structure of sflow_sglang_disagg.yaml.
 
-Supports both TRTLLM (recipes/trtllm/) and SGLang (all other recipe dirs) backends.
-TRTLLM recipes follow the sflow_trtllm_disagg.yaml template.
-SGLang recipes follow the sflow_sglang_disagg.yaml template and support both
-disaggregated (prefill/decode) and aggregated modes.
+Supports both disaggregated (prefill/decode) and aggregated modes.
 """
 
 from __future__ import annotations
@@ -40,10 +38,6 @@ def _concurrency_domain(concurrencies) -> list[int]:
     return values if values else [50]
 
 
-def _yaml_to_literal_block(obj: dict) -> str:
-    return yaml.dump(obj, default_flow_style=False, allow_unicode=True, sort_keys=False).rstrip()
-
-
 def _aiperf_image(gpu_type: str) -> str:
     use_arm = gpu_type.startswith("gb200") or gpu_type.startswith("gb300")
     return (
@@ -74,11 +68,7 @@ def _sglang_config_to_cli_args(config: dict[str, Any]) -> list[str]:
 
 
 def _generate_nginx_config(num_frontends: int, slurm_nodes: int, frontend_port: int = 8180) -> str:
-    """Generate nginx config content with sflow node IP expressions.
-
-    Frontends run on worker nodes (node[1]..node[N]), nginx proxies to them.
-    The number of frontend nodes is capped by available worker nodes.
-    """
+    """Generate nginx config content with sflow node IP expressions."""
     actual_count = min(num_frontends, slurm_nodes - 1)
     lines = [
         "worker_processes auto;",
@@ -122,14 +112,21 @@ def _base_variables(
     concurrency_domain: list[int],
     aiperf_image: str,
 ) -> dict[str, Any]:
-    """Variables common to both TRTLLM and SGLang sflow recipes."""
+    """Variables common to all SGLang sflow recipes."""
     return {
         "SLURM_ACCOUNT": {"description": "SLURM account", "value": "rogliu"},
         "SLURM_PARTITION": {"description": "SLURM partition", "value": "gamoraq"},
         "SLURM_TIMELIMIT": {"description": "SLURM time limit", "value": 120},
         "GPUS_PER_NODE": {"description": "GPUs per node", "value": gpus_per_node},
-        "SLURM_NODES": {"description": "Number of nodes", "value": slurm_nodes},
-        "SERVED_MODEL_NAME": {"description": "Served model name", "value": served_model_name},
+        "SLURM_NODES": {
+            "description": "Number of nodes",
+            "type": "integer",
+            "value": slurm_nodes,
+        },
+        "SERVED_MODEL_NAME": {
+            "description": "Served model name",
+            "value": served_model_name,
+        },
         "MODEL_PATH": {"description": "Model path (fs or name)", "value": model_path},
         "EXTRA_FRONTEND_ARGS": {"description": "Extra frontend arguments", "value": ""},
         "ISL": {"description": "Input sequence length", "value": isl},
@@ -140,212 +137,11 @@ def _base_variables(
             "value": concurrency_domain[0],
             "domain": concurrency_domain,
         },
-        "AIPERF_IMAGE": {"description": "AIPerf container image", "value": aiperf_image},
-    }
-
-
-# ---------------------------------------------------------------------------
-# TRTLLM conversion
-# ---------------------------------------------------------------------------
-
-
-def _norm_container(container: str) -> str:
-    if not container:
-        return "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.8.0"
-    return container.replace("#", "/", 1)
-
-
-def convert_trtllm_recipe(recipe_path: Path, data: dict) -> dict:
-    """Convert one srtslurm TRTLLM recipe to sflow workflow structure."""
-    name = data.get("name", recipe_path.stem)
-    model = data.get("model", {})
-    resources = data.get("resources", {})
-    backend = data.get("backend", {})
-    benchmark = data.get("benchmark", {})
-    infra = data.get("infra", {})
-
-    trtllm_config = backend.get("trtllm_config") or {}
-    prefill_cfg = trtllm_config.get("prefill") or {}
-    decode_cfg = trtllm_config.get("decode") or {}
-
-    prefill_env = backend.get("prefill_environment") or {}
-    decode_env = backend.get("decode_environment") or {}
-
-    gpus_per_node = int(resources.get("gpus_per_node", 8))
-    prefill_workers = int(resources.get("prefill_workers", 1))
-    prefill_nodes = int(resources.get("prefill_nodes", 1))
-    decode_workers = int(resources.get("decode_workers", 1))
-    decode_nodes = int(resources.get("decode_nodes", 1))
-
-    ctx_tp = int(prefill_cfg.get("tensor_parallel_size", 1))
-    gen_tp = int(decode_cfg.get("tensor_parallel_size", 1))
-
-    extra_node = 1 if infra.get("etcd_nats_dedicated_node") else 0
-    slurm_nodes = prefill_nodes + decode_nodes + 1 + extra_node
-
-    model_path = model.get("path", "model")
-    served_model_name = model_path.replace("/", "-")
-    container = _norm_container(model.get("container", ""))
-
-    isl = int(benchmark.get("isl", 1024))
-    osl = int(benchmark.get("osl", 1024))
-    concurrency_domain = _concurrency_domain(benchmark.get("concurrencies", "50"))
-    gpu_type = str(resources.get("gpu_type", "")).lower()
-
-    variables = _base_variables(
-        gpus_per_node=gpus_per_node,
-        slurm_nodes=slurm_nodes,
-        served_model_name=served_model_name,
-        model_path=model_path,
-        isl=isl,
-        osl=osl,
-        concurrency_domain=concurrency_domain,
-        aiperf_image=_aiperf_image(gpu_type),
-    )
-    variables.update(
-        {
-            "NUM_CTX_SERVERS": {"description": "Number of context/prefill servers", "value": prefill_workers},
-            "CTX_TP_SIZE": {"description": "Context tensor parallel size", "value": ctx_tp},
-            "CTX_DP_SIZE": {"description": "Context data parallel size", "value": 1},
-            "CTX_EP_SIZE": {"description": "Context expert parallel size", "value": 1},
-            "CTX_MOE_TP_SIZE": {"description": "Context MOE tensor parallel size", "value": ctx_tp},
-            "CTX_PP_SIZE": {
-                "description": "Context pipeline parallel size",
-                "value": int(prefill_cfg.get("pipeline_parallel_size", 1)),
-            },
-            "CTX_REPLICAS_POLICY": {"description": "Context replicas policy", "value": "parallel"},
-            "CTX_BATCH_SIZE": {
-                "description": "Context batch size",
-                "value": int(prefill_cfg.get("max_batch_size", 128)),
-            },
-            "CTX_MAX_NUM_TOKENS": {
-                "description": "Context max number of tokens",
-                "value": int(prefill_cfg.get("max_num_tokens", 4096)),
-            },
-            "CTX_MAX_SEQ_LEN": {
-                "description": "Context max sequence length",
-                "value": int(prefill_cfg.get("max_seq_len", 1280)),
-            },
-            "CTX_FREE_GPU_MEMORY_FRACTION": {
-                "description": "Context free GPU memory fraction",
-                "value": float(prefill_cfg.get("kv_cache_config", {}).get("free_gpu_memory_fraction", 0.9)),
-            },
-            "CTX_ENABLE_ATTENTION_DP": {
-                "description": "Context enable attention DP",
-                "value": prefill_cfg.get("enable_attention_dp", False),
-            },
-            "KV_CACHE_DTYPE": {
-                "description": "KV cache dtype",
-                "value": prefill_cfg.get("kv_cache_config", {}).get("dtype", "fp8"),
-            },
-            "NUM_GEN_SERVERS": {"description": "Number of generation/decode servers", "value": decode_workers},
-            "GEN_TP_SIZE": {"description": "Generation tensor parallel size", "value": gen_tp},
-            "GEN_DP_SIZE": {"description": "Generation data parallel size", "value": 1},
-            "GEN_EP_SIZE": {"description": "Generation expert parallel size", "value": 1},
-            "GEN_MOE_TP_SIZE": {"description": "Generation MOE tensor parallel size", "value": gen_tp},
-            "GEN_PP_SIZE": {
-                "description": "Generation pipeline parallel size",
-                "value": int(decode_cfg.get("pipeline_parallel_size", 1)),
-            },
-            "GEN_REPLICAS_POLICY": {"description": "Generation replicas policy", "value": "parallel"},
-            "GEN_BATCH_SIZE": {
-                "description": "Generation batch size",
-                "value": int(decode_cfg.get("max_batch_size", 128)),
-            },
-            "GEN_MAX_NUM_TOKENS": {
-                "description": "Generation max number of tokens",
-                "value": int(decode_cfg.get("max_num_tokens", 4096)),
-            },
-            "GEN_MAX_SEQ_LEN": {
-                "description": "Generation max sequence length",
-                "value": int(decode_cfg.get("max_seq_len", 2304)),
-            },
-            "GEN_FREE_GPU_MEMORY_FRACTION": {
-                "description": "Generation free GPU memory fraction",
-                "value": float(decode_cfg.get("kv_cache_config", {}).get("free_gpu_memory_fraction", 0.9)),
-            },
-            "GEN_ENABLE_ATTENTION_DP": {
-                "description": "Generation enable attention DP",
-                "value": decode_cfg.get("enable_attention_dp", False),
-            },
-            "EXTRA_PREFILL_ARGS": {"description": "Extra prefill arguments", "value": ""},
-            "EXTRA_DECODE_ARGS": {"description": "Extra decode arguments", "value": ""},
-            "DYNAMO_IMAGE": {"description": "Dynamo TRTLLM container image", "value": container},
-        }
-    )
-
-    if "/" in model_path and not model_path.startswith(("fs://", "file://")):
-        model_uri = f"fs://{model_path}"
-    else:
-        model_uri = "fs://${{ variables.MODEL_PATH }}"
-    artifacts = [
-        {"name": "LOCAL_MODEL_PATH", "uri": model_uri},
-        {
-            "name": "PREFILL_CONFIG",
-            "uri": "file://prefill_config.yaml",
-            "content": _yaml_to_literal_block(prefill_cfg) if prefill_cfg else "",
-        },
-        {
-            "name": "DECODE_CONFIG",
-            "uri": "file://decode_config.yaml",
-            "content": _yaml_to_literal_block(decode_cfg) if decode_cfg else "",
-        },
-    ]
-
-    prefill_script = ["set -x", "echo ${CUDA_VISIBLE_DEVICES}"]
-    for k, v in prefill_env.items():
-        prefill_script.append(f'export {k}="{v}"')
-    prefill_script.append(
-        "trtllm-llmapi-launch python3 -m dynamo.trtllm "
-        "--model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} "
-        "--served-model-name ${SERVED_MODEL_NAME} "
-        "--disaggregation-mode prefill "
-        "--extra-engine-args ${{ artifacts.PREFILL_CONFIG.path }} ${EXTRA_PREFILL_ARGS}",
-    )
-
-    decode_script = ["set -x", "echo ${CUDA_VISIBLE_DEVICES}"]
-    for k, v in decode_env.items():
-        decode_script.append(f'export {k}="{v}"')
-    decode_script.append(
-        "trtllm-llmapi-launch python3 -m dynamo.trtllm "
-        "--model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} "
-        "--served-model-name ${SERVED_MODEL_NAME} "
-        "--disaggregation-mode decode "
-        "--extra-engine-args ${{ artifacts.DECODE_CONFIG.path }} ${EXTRA_DECODE_ARGS}",
-    )
-
-    sample_path = Path(__file__).resolve().parent.parent / "sflow_trtllm_disagg.yaml"
-    with open(sample_path, encoding="utf-8") as f:
-        template = yaml.safe_load(f)
-
-    out = {
-        "version": "0.1",
-        "variables": variables,
-        "artifacts": artifacts,
-        "backends": template["backends"],
-        "operators": template["operators"],
-        "workflow": {
-            "name": name.replace(" ", "_").replace('"', ""),
-            "timeout": "115m",
-            "variables": template["workflow"]["variables"],
-            "tasks": [],
+        "AIPERF_IMAGE": {
+            "description": "AIPerf container image",
+            "value": aiperf_image,
         },
     }
-
-    for task in template["workflow"]["tasks"]:
-        t = dict(task)
-        if t["name"] == "prefill_server":
-            t["script"] = prefill_script
-        elif t["name"] == "decode_server":
-            t["script"] = decode_script
-        out["workflow"]["tasks"].append(t)
-
-    return out
-
-
-# ---------------------------------------------------------------------------
-# SGLang conversion
-# ---------------------------------------------------------------------------
 
 
 def _get_sglang_tp(config: dict[str, Any]) -> int:
@@ -354,6 +150,30 @@ def _get_sglang_tp(config: dict[str, Any]) -> int:
         if key in config:
             return int(config[key])
     return 1
+
+
+def _get_sglang_dp(config: dict[str, Any]) -> int:
+    """Extract data-parallel size from sglang_config dict."""
+    for key in ("dp-size", "data-parallel-size", "dp_size", "data_parallel_size"):
+        if key in config:
+            return int(config[key])
+    return 1
+
+
+def _get_sglang_pp(config: dict[str, Any]) -> int:
+    """Extract pipeline-parallel size from sglang_config dict."""
+    for key in ("pp-size", "pipeline-parallel-size", "pp_size", "pipeline_parallel_size"):
+        if key in config:
+            return int(config[key])
+    return 1
+
+
+def _has_dp_attention(config: dict[str, Any]) -> bool:
+    """Check if dp-attention is enabled in sglang_config."""
+    for key in ("enable-dp-attention", "enable_dp_attention"):
+        if key in config:
+            return bool(config[key])
+    return False
 
 
 def _is_aggregated_recipe(data: dict) -> bool:
@@ -387,87 +207,58 @@ def _get_frontend_config(data: dict) -> tuple[bool, int, str]:
     enable = fe.get("enable_multiple_frontends", False)
     num_additional = int(fe.get("num_additional_frontends", 9))
     nginx_container = fe.get("nginx_container", "nginx:1.27.4")
-    # Total frontends = num_additional + 1 (the first one)
     return enable, num_additional + 1, nginx_container
 
 
-def _apply_multi_frontend(
-    out: dict,
-    enable_multi: bool,
-    num_frontends: int,
-    nginx_container: str,
-    slurm_nodes: int,
-) -> None:
-    """Apply multi-frontend configuration to the sflow output dict in-place.
+def _get_frontend_extra_args(data: dict) -> str:
+    """Extract extra frontend CLI args from recipe frontend.args dict."""
+    fe = data.get("frontend", {})
+    args_dict = fe.get("args", {})
+    if not args_dict:
+        return ""
+    parts: list[str] = []
+    for key, value in args_dict.items():
+        flag = f"--{key}" if key.startswith("-") else f"--{key.replace('_', '-')}"
+        if isinstance(value, bool):
+            if value:
+                parts.append(flag)
+        elif value is not None:
+            parts.extend([flag, str(value)])
+    return " ".join(parts)
 
-    When multi-frontend is enabled:
-    - Adds NUM_FRONTENDS, FRONTEND_PORT, NGINX_IMAGE variables
-    - Generates NGINX_CONFIG artifact with upstream entries
-    - Includes nginx_server task, adjusts frontend_server
-    - Updates benchmark depends_on to include nginx_server
 
-    When disabled:
-    - Removes nginx_server task
-    - Keeps single frontend on port 8000
-    """
-    if enable_multi:
-        frontend_port = 8180
-        actual_frontends = min(num_frontends, slurm_nodes - 1)
-        out["variables"]["NUM_FRONTENDS"] = {
-            "description": "Number of frontend instances",
-            "value": actual_frontends,
-        }
-        out["variables"]["FRONTEND_PORT"] = {
-            "description": "Frontend listening port (8180 behind nginx, 8000 direct)",
-            "value": frontend_port,
-        }
-        out["variables"]["NGINX_IMAGE"] = {
-            "description": "Nginx container image",
-            "value": nginx_container,
-        }
-
-        nginx_cfg = _generate_nginx_config(actual_frontends, slurm_nodes, frontend_port)
-        out["artifacts"].append(
-            {
-                "name": "NGINX_CONFIG",
-                "uri": "file://nginx.conf",
-                "content": nginx_cfg,
-            }
-        )
-
-        # Update benchmark depends_on to include nginx_server
-        for task in out["workflow"]["tasks"]:
-            if task["name"] == "benchmark":
-                deps = task.get("depends_on", [])
-                if "nginx_server" not in deps:
-                    deps.append("nginx_server")
-                # Remove direct frontend_server dep — nginx handles it
-                if "frontend_server" in deps:
-                    deps.remove("frontend_server")
-                task["depends_on"] = deps
-    else:
-        # Single frontend: remove nginx_server task, keep defaults
-        out["variables"]["NUM_FRONTENDS"] = {
-            "description": "Number of frontend instances",
-            "value": 1,
-        }
-        out["variables"]["FRONTEND_PORT"] = {
-            "description": "Frontend listening port",
-            "value": 8000,
-        }
-        out["workflow"]["tasks"] = [t for t in out["workflow"]["tasks"] if t["name"] != "nginx_server"]
+def _load_template_worker_script(task_name: str) -> list[str]:
+    """Load a worker task's script from the sflow_sglang_disagg.yaml template."""
+    template_path = Path(__file__).resolve().parent.parent / "sflow_sglang_disagg.yaml"
+    with open(template_path, encoding="utf-8") as f:
+        template = yaml.safe_load(f)
+    for task in template["workflow"]["tasks"]:
+        if task["name"] == task_name:
+            return list(task["script"])
+    raise ValueError(f"Task {task_name!r} not found in template")
 
 
 def _build_sglang_server_script(
+    *,
+    template_script: list[str],
     env_vars: dict[str, str],
     sglang_cli_args: list[str],
     mode: str | None = None,
     extra_args_var: str = "EXTRA_PREFILL_ARGS",
 ) -> list[str]:
-    """Build the shell script lines for a sglang worker task."""
-    script = ["set -x", "echo ${CUDA_VISIBLE_DEVICES}"]
-    for k, v in env_vars.items():
-        script.append(f'export {k}="{v}"')
+    """Build a sglang worker script by merging template infrastructure with recipe args.
+
+    - Preserves template infrastructure (NODES_PER_WORKER, MULTI_NODE_EXTRA_ARGS, etc.)
+    - Inserts recipe env exports after "set -x"
+    - Replaces the last script line (python command) with recipe CLI args,
+      keeping --disaggregation-bootstrap-port and ${MULTI_NODE_EXTRA_ARGS} from template
+    """
+    script = list(template_script)
+
+    env_lines = [f'export {k}="{v}"' for k, v in env_vars.items()]
+    # Insert after "set -x" and "echo ${CUDA_VISIBLE_DEVICES}" (index 0, 1)
+    for i, line in enumerate(env_lines):
+        script.insert(2 + i, line)
 
     cmd_parts = [
         "python3 -m dynamo.sglang",
@@ -477,10 +268,340 @@ def _build_sglang_server_script(
     if mode:
         cmd_parts.append(f"--disaggregation-mode {mode}")
     cmd_parts.extend(sglang_cli_args)
+    cmd_parts.append(
+        "--disaggregation-bootstrap-port"
+        ' $(python3 -c "import socket; s=socket.socket();'
+        " s.bind(('', 0)); print(s.getsockname()[1]); s.close()\")"
+    )
+    cmd_parts.append("${MULTI_NODE_EXTRA_ARGS}")
+    cmd_parts.append("--host 0.0.0.0")
+    cmd_parts.append(f"${{{extra_args_var}}}")
+
+    script[-1] = " ".join(cmd_parts)
+    return script
+
+
+def _build_sglang_agg_server_script(
+    env_vars: dict[str, str],
+    sglang_cli_args: list[str],
+    extra_args_var: str = "EXTRA_AGG_ARGS",
+) -> list[str]:
+    """Build an aggregated sglang worker script (no disaggregation-bootstrap-port)."""
+    script: list[str] = ["set -x", "echo ${CUDA_VISIBLE_DEVICES}"]
+    for k, v in env_vars.items():
+        script.append(f'export {k}="{v}"')
+
+    cmd_parts = [
+        "python3 -m dynamo.sglang",
+        "--model-path ${{ artifacts.LOCAL_MODEL_PATH.path }}",
+        "--served-model-name ${SERVED_MODEL_NAME}",
+    ]
+    cmd_parts.extend(sglang_cli_args)
     cmd_parts.append(f"${{{extra_args_var}}}")
 
     script.append(" ".join(cmd_parts))
     return script
+
+
+# ---------------------------------------------------------------------------
+# Sflow structure constants
+# ---------------------------------------------------------------------------
+
+_SFLOW_BACKENDS = [
+    {
+        "name": "slurm_cluster",
+        "type": "slurm",
+        "default": True,
+        "time": "${{ variables.SLURM_TIMELIMIT }}",
+        "nodes": "${{ variables.SLURM_NODES }}",
+        "partition": "${{ variables.SLURM_PARTITION }}",
+        "account": "${{ variables.SLURM_ACCOUNT }}",
+        "gpus_per_node": "${{ variables.GPUS_PER_NODE }}",
+    }
+]
+
+_SFLOW_WORKFLOW_VARIABLES = {
+    "HEAD_NODE_IP": {
+        "description": "Head node IP (resolved after allocation)",
+        "value": "${{ backends.slurm_cluster.nodes[0].ip_address }}",
+    },
+    "ETCD_ENDPOINTS": {
+        "description": "ETCD endpoints",
+        "value": "${{ backends.slurm_cluster.nodes[0].ip_address }}:2379",
+    },
+    "NATS_SERVER": {
+        "description": "NATS server URL",
+        "value": "nats://${{ backends.slurm_cluster.nodes[0].ip_address }}:4222",
+    },
+}
+
+_GPU_MONITOR_CMD = (
+    "nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,"
+    "temperature.gpu,temperature.memory,power.draw,clocks.sm,clocks.mem,"
+    "memory.total,memory.used "
+    "--format=csv,noheader,nounits -lms 2000 | "
+    'while IFS= read -r input || [ -n "$input" ] ; '
+    "do timestamp=$(date +%s%3N); "
+    'printf "%s.%s,%s\\n" "${timestamp:0:10}" "${timestamp:10:3}" "${input}"; '
+    "done "
+    ">> ${SFLOW_TASK_OUTPUT_DIR}/gpu_monitor_node_${SLURM_NODEID}_${SLURMD_NODENAME}.log\n"
+)
+
+_ETCD_CMD = (
+    'etcd --listen-client-urls "http://0.0.0.0:2379" '
+    '--advertise-client-urls "http://0.0.0.0:2379" '
+    '--listen-peer-urls "http://0.0.0.0:2380" '
+    '--initial-advertise-peer-urls "http://${HEAD_NODE_IP}:2380" '
+    '--initial-cluster "default=http://${HEAD_NODE_IP}:2380" '
+    "--data-dir /tmp/etcd\n"
+)
+
+_BENCHMARK_CMD = (
+    "aiperf profile "
+    "--artifact-dir ${SFLOW_WORKFLOW_OUTPUT_DIR}/aiperf_concurrency_${CONCURRENCY} "
+    "--model ${{ variables.SERVED_MODEL_NAME }} "
+    "--tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} "
+    "--endpoint-type chat "
+    "--endpoint /v1/chat/completions "
+    "--streaming "
+    "--url http://${{ variables.HEAD_NODE_IP }}:8000 "
+    "--synthetic-input-tokens-mean ${{ variables.ISL }} "
+    "--synthetic-input-tokens-stddev 0 "
+    "--output-tokens-mean ${{ variables.OSL }} "
+    "--output-tokens-stddev 0 "
+    '--extra-inputs "max_tokens:${{ variables.OSL }}" '
+    '--extra-inputs "min_tokens:${{ variables.OSL }}" '
+    '--extra-inputs "ignore_eos:true" '
+    '--extra-inputs "{\\"nvext\\":{\\"ignore_eos\\":true}}" '
+    '--extra-inputs "repetition_penalty:1.0" '
+    '--extra-inputs "temperature: 0.0" '
+    "--concurrency ${CONCURRENCY} "
+    "--request-count $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) "
+    "--warmup-request-count ${CONCURRENCY} "
+    "--num-dataset-entries $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) "
+    "--random-seed 100 "
+    "-H 'Authorization: Bearer NOT USED' "
+    "-H 'Accept: text/event-stream' "
+    "--record-processors 8 "
+    "--ui simple\n"
+)
+
+
+# ---------------------------------------------------------------------------
+# Sflow task builders
+# ---------------------------------------------------------------------------
+
+
+def _build_operators(*, enable_multi_frontend: bool) -> list[dict]:
+    ops: list[dict] = [
+        {
+            "name": "dynamo_sglang",
+            "type": "srun",
+            "container_image": "${{ variables.SGLANG_IMAGE }}",
+            "container_writable": True,
+            "mpi": "pmix",
+        },
+    ]
+    if enable_multi_frontend:
+        ops.append(
+            {
+                "name": "nginx",
+                "type": "srun",
+                "container_image": "${{ variables.NGINX_IMAGE }}",
+                "container_writable": True,
+            }
+        )
+    ops.append(
+        {
+            "name": "aiperf",
+            "type": "srun",
+            "container_image": "${{ variables.AIPERF_IMAGE }}",
+            "container_writable": True,
+            "mpi": "pmix",
+        }
+    )
+    return ops
+
+
+def _build_infra_tasks() -> list[dict]:
+    """Build infrastructure tasks: load_image, install_aiperf, gpu_monitor, nats, etcd."""
+    return [
+        {
+            "name": "load_image",
+            "operator": {
+                "name": "dynamo_sglang",
+                "ntasks": "${{ variables.SLURM_NODES }}",
+                "ntasks_per_node": 1,
+            },
+            "script": ['echo "Image Loaded"', "sleep 3600"],
+            "probes": {
+                "readiness": {
+                    "log_watch": {
+                        "regex_pattern": "Image Loaded",
+                        "match_count": "${{ variables.SLURM_NODES }}",
+                    },
+                    "timeout": 1200,
+                    "interval": 2,
+                }
+            },
+        },
+        {
+            "name": "install_aiperf",
+            "operator": {"name": "aiperf", "ntasks_per_node": 1},
+            "resources": {"nodes": {"indices": [0]}},
+            "script": [
+                "pip install aiperf==0.3.0",
+                'echo "AIPerf installed"',
+                "sleep 3600",
+            ],
+            "probes": {
+                "readiness": {
+                    "log_watch": {"regex_pattern": "AIPerf installed"},
+                    "timeout": 1200,
+                    "interval": 2,
+                }
+            },
+        },
+        {
+            "name": "gpu_monitor",
+            "operator": {"name": "dynamo_sglang", "ntasks_per_node": 1},
+            "resources": {"nodes": {"count": "${{ variables.SLURM_NODES }}"}},
+            "script": ['echo "Starting gpu monitor"', _GPU_MONITOR_CMD],
+            "probes": {
+                "readiness": {
+                    "log_watch": {"regex_pattern": "Starting gpu monitor"},
+                    "timeout": 60,
+                    "interval": 2,
+                }
+            },
+            "depends_on": ["load_image", "install_aiperf"],
+        },
+        {
+            "name": "nats_server",
+            "operator": "dynamo_sglang",
+            "script": ["nats-server -js"],
+            "resources": {"nodes": {"indices": [0]}},
+            "probes": {
+                "readiness": {
+                    "tcp_port": {"port": 4222},
+                    "timeout": 60,
+                    "interval": 2,
+                }
+            },
+            "depends_on": ["load_image", "install_aiperf"],
+        },
+        {
+            "name": "etcd_server",
+            "operator": "dynamo_sglang",
+            "script": [_ETCD_CMD],
+            "resources": {"nodes": {"indices": [0]}},
+            "probes": {
+                "readiness": {
+                    "tcp_port": {"port": 2379},
+                    "timeout": 60,
+                    "interval": 2,
+                }
+            },
+            "depends_on": ["load_image", "install_aiperf"],
+        },
+    ]
+
+
+def _build_nginx_task() -> dict:
+    return {
+        "name": "nginx_server",
+        "operator": "nginx",
+        "script": ["nginx -c ${{ artifacts.NGINX_CONFIG.path }} -g 'daemon off;'"],
+        "resources": {"nodes": {"indices": [0]}},
+        "probes": {
+            "readiness": {
+                "tcp_port": {"port": 8000},
+                "timeout": 60,
+                "interval": 2,
+            }
+        },
+        "depends_on": ["frontend_server"],
+    }
+
+
+def _build_frontend_task() -> dict:
+    return {
+        "name": "frontend_server",
+        "operator": "dynamo_sglang",
+        "replicas": {
+            "count": "${{ variables.NUM_FRONTENDS }}",
+            "policy": "parallel",
+        },
+        "script": [
+            "python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}"
+        ],
+        "resources": {"nodes": {"count": 1}},
+        "probes": {
+            "readiness": {
+                "tcp_port": {"port": "${{ variables.FRONTEND_PORT }}"},
+                "timeout": 120,
+                "interval": 5,
+            }
+        },
+        "depends_on": ["nats_server", "etcd_server"],
+    }
+
+
+def _build_worker_task(
+    *,
+    name: str,
+    tp_var: str,
+    num_servers_var: str,
+    script: list[str],
+) -> dict:
+    return {
+        "name": name,
+        "operator": {
+            "name": "dynamo_sglang",
+            # "ntasks": f"${{{{ variables.{tp_var} }}}}",
+            "ntasks_per_node": 1,
+        },
+        "replicas": {
+            "count": f"${{{{ variables.{num_servers_var} }}}}",
+            "policy": "parallel",
+        },
+        "script": script,
+        "resources": {"gpus": {"count": f"${{{{ variables.{tp_var} }}}}"}},
+        "depends_on": ["frontend_server"],
+        "probes": {
+            "readiness": {
+                "log_watch": {"regex_pattern": "The server is fired up"},
+                "timeout": 900,
+                "interval": 10,
+            },
+            "failure": {
+                "log_watch": {"regex_pattern": "Traceback (most recent call last)"},
+                "interval": 10,
+            },
+        },
+        "retries": {"count": 3, "interval": 30, "backoff": 2},
+    }
+
+
+def _build_benchmark_task(*, depends_on: list[str]) -> dict:
+    return {
+        "name": "benchmark",
+        "operator": {"name": "aiperf", "ntasks": 1},
+        "script": [
+            "set -x",
+            "export COLUMNS=200",
+            _BENCHMARK_CMD,
+            'echo "Benchmarking finished"',
+        ],
+        "resources": {"nodes": {"indices": [0]}},
+        "replicas": {"variables": ["CONCURRENCY"], "policy": "sequential"},
+        "depends_on": depends_on,
+    }
+
+
+# ---------------------------------------------------------------------------
+# SGLang conversion
+# ---------------------------------------------------------------------------
 
 
 def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
@@ -505,7 +626,13 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
     decode_nodes = int(resources.get("decode_nodes", 0))
 
     ctx_tp = _get_sglang_tp(prefill_cfg)
+    ctx_dp = _get_sglang_dp(prefill_cfg)
+    ctx_pp = _get_sglang_pp(prefill_cfg)
+    ctx_dp_attn = _has_dp_attention(prefill_cfg)
     gen_tp = _get_sglang_tp(decode_cfg)
+    gen_dp = _get_sglang_dp(decode_cfg)
+    gen_pp = _get_sglang_pp(decode_cfg)
+    gen_dp_attn = _has_dp_attention(decode_cfg)
 
     extra_node = 1 if infra.get("etcd_nats_dedicated_node") else 0
     slurm_nodes = prefill_nodes + decode_nodes + 1 + extra_node
@@ -523,10 +650,17 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
     )
 
     enable_multi, num_frontends, nginx_container = _get_frontend_config(data)
+    frontend_extra = _get_frontend_extra_args(data)
 
-    # Strip keys that are handled by sflow variables/command structure
     for cfg in (prefill_cfg, decode_cfg):
-        for k in ("served-model-name", "served_model_name", "disaggregation-mode", "disaggregation_mode"):
+        for k in (
+            "served-model-name",
+            "served_model_name",
+            "disaggregation-mode",
+            "disaggregation_mode",
+            "disaggregation-bootstrap-port",
+            "disaggregation_bootstrap_port",
+        ):
             cfg.pop(k, None)
 
     prefill_cli = _sglang_config_to_cli_args(prefill_cfg)
@@ -542,60 +676,163 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
         concurrency_domain=concurrency_domain,
         aiperf_image=_aiperf_image(gpu_type),
     )
+    if frontend_extra:
+        variables["EXTRA_FRONTEND_ARGS"]["value"] = frontend_extra
+
     variables.update(
         {
-            "NUM_CTX_SERVERS": {"description": "Number of context/prefill servers", "value": prefill_workers},
-            "CTX_TP_SIZE": {"description": "Context tensor parallel size", "value": ctx_tp},
-            "NUM_GEN_SERVERS": {"description": "Number of generation/decode servers", "value": decode_workers},
-            "GEN_TP_SIZE": {"description": "Generation tensor parallel size", "value": gen_tp},
-            "EXTRA_PREFILL_ARGS": {"description": "Extra prefill arguments", "value": ""},
+            "NUM_CTX_SERVERS": {
+                "description": "Number of context/prefill servers",
+                "value": prefill_workers,
+            },
+            "CTX_TP_SIZE": {
+                "description": "Context tensor parallel size",
+                "type": "integer",
+                "value": ctx_tp,
+            },
+            "CTX_DP_SIZE": {
+                "description": "Context data parallel size",
+                "type": "integer",
+                "value": ctx_dp,
+            },
+            "CTX_PP_SIZE": {
+                "description": "Context pipeline parallel size",
+                "type": "integer",
+                "value": ctx_pp,
+            },
+            "CTX_ENABLE_ATTENTION_DP": {
+                "description": "Context enable attention DP",
+                "value": "--enable-dp-attention" if ctx_dp_attn else "",
+            },
+            "NUM_GEN_SERVERS": {
+                "description": "Number of generation/decode servers",
+                "value": decode_workers,
+            },
+            "GEN_TP_SIZE": {
+                "description": "Generation tensor parallel size",
+                "type": "integer",
+                "value": gen_tp,
+            },
+            "GEN_DP_SIZE": {
+                "description": "Generation data parallel size",
+                "type": "integer",
+                "value": gen_dp,
+            },
+            "GEN_PP_SIZE": {
+                "description": "Generation pipeline parallel size",
+                "type": "integer",
+                "value": gen_pp,
+            },
+            "GEN_ENABLE_ATTENTION_DP": {
+                "description": "Generation enable attention DP",
+                "value": "--enable-dp-attention" if gen_dp_attn else "",
+            },
+            "EXTRA_PREFILL_ARGS": {
+                "description": "Extra prefill arguments",
+                "value": "",
+            },
             "EXTRA_DECODE_ARGS": {"description": "Extra decode arguments", "value": ""},
-            "SGLANG_IMAGE": {"description": "SGLang container image", "value": container},
+            "SGLANG_IMAGE": {
+                "description": "SGLang container image",
+                "value": container,
+            },
         }
     )
+
+    if enable_multi:
+        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        variables["NUM_FRONTENDS"] = {
+            "description": "Number of frontend instances",
+            "value": actual_frontends,
+        }
+        variables["FRONTEND_PORT"] = {
+            "description": "Frontend listening port (8180 behind nginx, 8000 direct)",
+            "value": 8180,
+        }
+        variables["NGINX_IMAGE"] = {
+            "description": "Nginx container image",
+            "value": nginx_container,
+        }
+    else:
+        variables["NUM_FRONTENDS"] = {
+            "description": "Number of frontend instances",
+            "value": 1,
+        }
+        variables["FRONTEND_PORT"] = {
+            "description": "Frontend listening port",
+            "value": 8000,
+        }
 
     if "/" in model_path and not model_path.startswith(("fs://", "file://")):
         model_uri = f"fs://{model_path}"
     else:
         model_uri = "fs://${{ variables.MODEL_PATH }}"
-    artifacts = [{"name": "LOCAL_MODEL_PATH", "uri": model_uri}]
+    artifacts: list[dict] = [{"name": "LOCAL_MODEL_PATH", "uri": model_uri}]
+
+    if enable_multi:
+        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        nginx_cfg = _generate_nginx_config(actual_frontends, slurm_nodes, 8180)
+        artifacts.append({"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg})
+
+    prefill_tmpl_script = _load_template_worker_script("prefill_server")
+    decode_tmpl_script = _load_template_worker_script("decode_server")
 
     prefill_script = _build_sglang_server_script(
-        prefill_env, prefill_cli, mode="prefill", extra_args_var="EXTRA_PREFILL_ARGS"
+        template_script=prefill_tmpl_script,
+        env_vars=prefill_env,
+        sglang_cli_args=prefill_cli,
+        mode="prefill",
+        extra_args_var="EXTRA_PREFILL_ARGS",
     )
     decode_script = _build_sglang_server_script(
-        decode_env, decode_cli, mode="decode", extra_args_var="EXTRA_DECODE_ARGS"
+        template_script=decode_tmpl_script,
+        env_vars=decode_env,
+        sglang_cli_args=decode_cli,
+        mode="decode",
+        extra_args_var="EXTRA_DECODE_ARGS",
     )
 
-    template_path = Path(__file__).resolve().parent.parent / "sflow_sglang_disagg.yaml"
-    with open(template_path, encoding="utf-8") as f:
-        template = yaml.safe_load(f)
+    tasks = _build_infra_tasks()
+    if enable_multi:
+        tasks.append(_build_nginx_task())
+    tasks.append(_build_frontend_task())
+    tasks.append(
+        _build_worker_task(
+            name="prefill_server",
+            tp_var="CTX_TP_SIZE",
+            num_servers_var="NUM_CTX_SERVERS",
+            script=prefill_script,
+        )
+    )
+    tasks.append(
+        _build_worker_task(
+            name="decode_server",
+            tp_var="GEN_TP_SIZE",
+            num_servers_var="NUM_GEN_SERVERS",
+            script=decode_script,
+        )
+    )
 
-    out = {
+    bench_deps = ["prefill_server", "decode_server"]
+    if enable_multi:
+        bench_deps.append("nginx_server")
+    else:
+        bench_deps.append("frontend_server")
+    tasks.append(_build_benchmark_task(depends_on=bench_deps))
+
+    return {
         "version": "0.1",
         "variables": variables,
         "artifacts": artifacts,
-        "backends": template["backends"],
-        "operators": template["operators"],
+        "backends": _SFLOW_BACKENDS,
+        "operators": _build_operators(enable_multi_frontend=enable_multi),
         "workflow": {
             "name": name.replace(" ", "_").replace('"', ""),
             "timeout": "115m",
-            "variables": template["workflow"]["variables"],
-            "tasks": [],
+            "variables": _SFLOW_WORKFLOW_VARIABLES,
+            "tasks": tasks,
         },
     }
-
-    for task in template["workflow"]["tasks"]:
-        t = dict(task)
-        if t["name"] == "prefill_server":
-            t["script"] = prefill_script
-        elif t["name"] == "decode_server":
-            t["script"] = decode_script
-        out["workflow"]["tasks"].append(t)
-
-    _apply_multi_frontend(out, enable_multi, num_frontends, nginx_container, slurm_nodes)
-
-    return out
 
 
 def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
@@ -632,6 +869,7 @@ def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
     )
 
     enable_multi, num_frontends, nginx_container = _get_frontend_config(data)
+    frontend_extra = _get_frontend_extra_args(data)
 
     for k in ("served-model-name", "served_model_name"):
         agg_cfg.pop(k, None)
@@ -648,67 +886,100 @@ def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
         concurrency_domain=concurrency_domain,
         aiperf_image=_aiperf_image(gpu_type),
     )
+    if frontend_extra:
+        variables["EXTRA_FRONTEND_ARGS"]["value"] = frontend_extra
+
     variables.update(
         {
-            "NUM_AGG_SERVERS": {"description": "Number of aggregated servers", "value": agg_workers},
-            "AGG_TP_SIZE": {"description": "Aggregated tensor parallel size", "value": agg_tp},
-            "EXTRA_AGG_ARGS": {"description": "Extra aggregated server arguments", "value": ""},
-            "SGLANG_IMAGE": {"description": "SGLang container image", "value": container},
+            "NUM_AGG_SERVERS": {
+                "description": "Number of aggregated servers",
+                "value": agg_workers,
+            },
+            "AGG_TP_SIZE": {
+                "description": "Aggregated tensor parallel size",
+                "value": agg_tp,
+            },
+            "EXTRA_AGG_ARGS": {
+                "description": "Extra aggregated server arguments",
+                "value": "",
+            },
+            "SGLANG_IMAGE": {
+                "description": "SGLang container image",
+                "value": container,
+            },
         }
     )
+
+    if enable_multi:
+        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        variables["NUM_FRONTENDS"] = {
+            "description": "Number of frontend instances",
+            "value": actual_frontends,
+        }
+        variables["FRONTEND_PORT"] = {
+            "description": "Frontend listening port (8180 behind nginx, 8000 direct)",
+            "value": 8180,
+        }
+        variables["NGINX_IMAGE"] = {
+            "description": "Nginx container image",
+            "value": nginx_container,
+        }
+    else:
+        variables["NUM_FRONTENDS"] = {
+            "description": "Number of frontend instances",
+            "value": 1,
+        }
+        variables["FRONTEND_PORT"] = {
+            "description": "Frontend listening port",
+            "value": 8000,
+        }
 
     if "/" in model_path and not model_path.startswith(("fs://", "file://")):
         model_uri = f"fs://{model_path}"
     else:
         model_uri = "fs://${{ variables.MODEL_PATH }}"
-    artifacts = [{"name": "LOCAL_MODEL_PATH", "uri": model_uri}]
+    artifacts: list[dict] = [{"name": "LOCAL_MODEL_PATH", "uri": model_uri}]
 
-    agg_script = _build_sglang_server_script(agg_env, agg_cli, mode=None, extra_args_var="EXTRA_AGG_ARGS")
+    if enable_multi:
+        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        nginx_cfg = _generate_nginx_config(actual_frontends, slurm_nodes, 8180)
+        artifacts.append({"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg})
 
-    template_path = Path(__file__).resolve().parent.parent / "sflow_sglang_disagg.yaml"
-    with open(template_path, encoding="utf-8") as f:
-        template = yaml.safe_load(f)
+    agg_script = _build_sglang_agg_server_script(agg_env, agg_cli, extra_args_var="EXTRA_AGG_ARGS")
 
-    out = {
+    tasks = _build_infra_tasks()
+    if enable_multi:
+        tasks.append(_build_nginx_task())
+    tasks.append(_build_frontend_task())
+    tasks.append(
+        _build_worker_task(
+            name="agg_server",
+            tp_var="AGG_TP_SIZE",
+            num_servers_var="NUM_AGG_SERVERS",
+            script=agg_script,
+        )
+    )
+
+    bench_deps = ["agg_server"]
+    if enable_multi:
+        bench_deps.append("nginx_server")
+    else:
+        bench_deps.append("frontend_server")
+    tasks.append(_build_benchmark_task(depends_on=bench_deps))
+
+    return {
         "version": "0.1",
         "variables": variables,
         "artifacts": artifacts,
-        "backends": template["backends"],
-        "operators": template["operators"],
+        "backends": _SFLOW_BACKENDS,
+        "operators": _build_operators(enable_multi_frontend=enable_multi),
         "workflow": {
             "name": name.replace(" ", "_").replace('"', ""),
             "timeout": "115m",
-            "variables": template["workflow"]["variables"],
-            "tasks": [],
+            "variables": _SFLOW_WORKFLOW_VARIABLES,
+            "tasks": tasks,
         },
     }
-
-    for task in template["workflow"]["tasks"]:
-        t = dict(task)
-        if t["name"] == "prefill_server":
-            t = dict(task)
-            t["name"] = "agg_server"
-            t["script"] = agg_script
-            t["operator"] = {
-                "name": "dynamo_sglang",
-                "ntasks": "${{ variables.AGG_TP_SIZE }}",
-                "ntasks_per_node": "${{ [ variables.AGG_TP_SIZE, variables.GPUS_PER_NODE ] | min }}",
-            }
-            t["replicas"] = {"count": "${{ variables.NUM_AGG_SERVERS }}", "policy": "parallel"}
-            t["resources"] = {"gpus": {"count": "${{ variables.AGG_TP_SIZE }}"}}
-            out["workflow"]["tasks"].append(t)
-        elif t["name"] == "decode_server":
-            continue
-        elif t["name"] == "benchmark":
-            t = dict(task)
-            t["depends_on"] = ["agg_server", "frontend_server"]
-            out["workflow"]["tasks"].append(t)
-        else:
-            out["workflow"]["tasks"].append(t)
-
-    _apply_multi_frontend(out, enable_multi, num_frontends, nginx_container, slurm_nodes)
-
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -716,15 +987,7 @@ def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _is_trtllm_recipe(data: dict, path: Path) -> bool:
-    """Check if a recipe is TRTLLM-based."""
-    if "trtllm" in str(path):
-        return True
-    backend_type = data.get("backend", {}).get("type", "")
-    return backend_type == "trtllm"
-
-
-def _is_sglang_recipe(data: dict, path: Path) -> bool:
+def _is_sglang_recipe(data: dict) -> bool:
     """Check if a recipe is SGLang-based."""
     backend = data.get("backend", {})
     if backend.get("type") == "sglang":
@@ -744,13 +1007,14 @@ def main() -> int:
         print(f"Recipes dir not found: {recipes_dir}", file=sys.stderr)
         return 1
 
-    yaml_files = list(recipes_dir.rglob("*.yaml"))
+    trtllm_dir = recipes_dir / "trtllm"
+    yaml_files = [p for p in sorted(recipes_dir.rglob("*.yaml")) if not p.is_relative_to(trtllm_dir)]
     if not yaml_files:
-        print(f"No YAML files under {recipes_dir}", file=sys.stderr)
+        print(f"No YAML files under {recipes_dir} (excluding trtllm)", file=sys.stderr)
         return 1
 
     converted = 0
-    for path in sorted(yaml_files):
+    for path in yaml_files:
         try:
             with open(path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
@@ -762,17 +1026,15 @@ def main() -> int:
             print(f"Skip {path}: empty file", file=sys.stderr)
             continue
 
+        if not _is_sglang_recipe(data):
+            print(f"Skip {path}: not an SGLang recipe", file=sys.stderr)
+            continue
+
         try:
-            if _is_trtllm_recipe(data, path):
-                sflow = convert_trtllm_recipe(path, data)
-            elif _is_sglang_recipe(data, path):
-                if _is_aggregated_recipe(data):
-                    sflow = convert_sglang_agg_recipe(path, data)
-                else:
-                    sflow = convert_sglang_disagg_recipe(path, data)
+            if _is_aggregated_recipe(data):
+                sflow = convert_sglang_agg_recipe(path, data)
             else:
-                print(f"Skip {path}: unrecognized backend type", file=sys.stderr)
-                continue
+                sflow = convert_sglang_disagg_recipe(path, data)
         except Exception as e:
             print(f"Convert failed {path}: {e}", file=sys.stderr)
             continue
@@ -791,7 +1053,7 @@ def main() -> int:
             )
         converted += 1
 
-    print(f"Converted {converted} recipes", file=sys.stderr)
+    print(f"Converted {converted} SGLang recipes", file=sys.stderr)
     return 0
 
 

@@ -14,6 +14,7 @@ variables:
     value: 8
   SLURM_NODES:
     description: Number of nodes
+    type: integer
     value: 3
   SERVED_MODEL_NAME:
     description: Served model name
@@ -23,7 +24,7 @@ variables:
     value: qwen3-32b
   EXTRA_FRONTEND_ARGS:
     description: Extra frontend arguments
-    value: ''
+    value: --policy cache_aware
   ISL:
     description: Input sequence length
     value: 1024
@@ -77,10 +78,6 @@ operators:
   container_image: ${{ variables.SGLANG_IMAGE }}
   container_writable: true
   mpi: pmix
-- name: nginx
-  type: srun
-  container_image: ${{ variables.NGINX_IMAGE }}
-  container_writable: true
 - name: aiperf
   type: srun
   container_image: ${{ variables.AIPERF_IMAGE }}
@@ -203,8 +200,7 @@ workflow:
     - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
     resources:
       nodes:
-        indices:
-        - 0
+        count: 1
     probes:
       readiness:
         tcp_port:
@@ -217,8 +213,7 @@ workflow:
   - name: agg_server
     operator:
       name: dynamo_sglang
-      ntasks: ${{ variables.AGG_TP_SIZE }}
-      ntasks_per_node: ${{ [ variables.AGG_TP_SIZE, variables.GPUS_PER_NODE ] | min }}
+      ntasks_per_node: 1
     replicas:
       count: ${{ variables.NUM_AGG_SERVERS }}
       policy: parallel

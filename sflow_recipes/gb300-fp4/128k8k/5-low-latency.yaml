@@ -14,6 +14,7 @@ variables:
     value: 4
   SLURM_NODES:
     description: Number of nodes
+    type: integer
     value: 4
   SERVED_MODEL_NAME:
     description: Served model name
@@ -47,13 +48,37 @@ variables:
     value: 1
   CTX_TP_SIZE:
     description: Context tensor parallel size
+    type: integer
     value: 1
+  CTX_DP_SIZE:
+    description: Context data parallel size
+    type: integer
+    value: 1
+  CTX_PP_SIZE:
+    description: Context pipeline parallel size
+    type: integer
+    value: 4
+  CTX_ENABLE_ATTENTION_DP:
+    description: Context enable attention DP
+    value: ''
   NUM_GEN_SERVERS:
     description: Number of generation/decode servers
     value: 2
   GEN_TP_SIZE:
     description: Generation tensor parallel size
+    type: integer
     value: 4
+  GEN_DP_SIZE:
+    description: Generation data parallel size
+    type: integer
+    value: 4
+  GEN_PP_SIZE:
+    description: Generation pipeline parallel size
+    type: integer
+    value: 1
+  GEN_ENABLE_ATTENTION_DP:
+    description: Generation enable attention DP
+    value: --enable-dp-attention
   EXTRA_PREFILL_ARGS:
     description: Extra prefill arguments
     value: ''
@@ -87,10 +112,6 @@ operators:
   container_image: ${{ variables.SGLANG_IMAGE }}
   container_writable: true
   mpi: pmix
-- name: nginx
-  type: srun
-  container_image: ${{ variables.NGINX_IMAGE }}
-  container_writable: true
 - name: aiperf
   type: srun
   container_image: ${{ variables.AIPERF_IMAGE }}
@@ -213,8 +234,7 @@ workflow:
     - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
     resources:
       nodes:
-        indices:
-        - 0
+        count: 1
     probes:
       readiness:
         tcp_port:
@@ -227,8 +247,7 @@ workflow:
   - name: prefill_server
     operator:
       name: dynamo_sglang
-      ntasks: ${{ variables.CTX_TP_SIZE }}
-      ntasks_per_node: ${{ [ variables.CTX_TP_SIZE, variables.GPUS_PER_NODE ] | min }}
+      ntasks_per_node: 1
     replicas:
       count: ${{ variables.NUM_CTX_SERVERS }}
       policy: parallel
@@ -252,12 +271,27 @@ workflow:
     - export SGLANG_MOONCAKE_CUSTOM_MEM_POOL="True"
     - export SGLANG_USE_MESSAGE_QUEUE_BROADCASTER="0"
     - export TORCH_DISTRIBUTED_DEFAULT_TIMEOUT="1800"
+    - export FIRST_CUDA_DEVICE=$(echo ${CUDA_VISIBLE_DEVICES} | cut -d',' -f1)
+    - "if [ \"${CTX_ENABLE_ATTENTION_DP}\" == \"\" ]; then\n  export NODES_PER_WORKER=$(python3 -c \"print(max(int(${CTX_TP_SIZE}\
+      \ * ${CTX_DP_SIZE} * ${CTX_PP_SIZE} // ${GPUS_PER_NODE}), 1))\")\nelse\n  export NODES_PER_WORKER=$(python3 -c \"print(max(int(${CTX_TP_SIZE}\
+      \ * ${CTX_PP_SIZE} // ${GPUS_PER_NODE}), 1))\")\nfi\n"
+    - export NODE_RANK=${SLURM_NODEID}
+    - export FIRST_NODE_IP=$(echo ${SFLOW_TASK_ASSIGNED_NODE_IPS} | cut -d',' -f1)
+    - "if [ \"${NODES_PER_WORKER}\" -gt 1 ]; then\n  export MULTI_NODE_EXTRA_ARGS=\"--dist-init-addr ${FIRST_NODE_IP}:29500\
+      \ --nnodes ${NODES_PER_WORKER} --node-rank ${NODE_RANK}\"\nelse\n  export MULTI_NODE_EXTRA_ARGS=\"\"\nfi\n"
+    - export VLLM_NIXL_SIDE_CHANNEL_PORT=$((5557 + ${FIRST_CUDA_DEVICE}))
+    - export DYN_SYSTEM_PORT=$((8082 + ${FIRST_CUDA_DEVICE}))
+    - "# Check if dynamo.sglang module exists, if not install required packages\nif ! python3 -m dynamo.sglang --help >/dev/null\
+      \ 2>&1; then\n  echo \"dynamo.sglang not found, installing ai-dynamo packages...\"\n  pip install --break-system-packages\
+      \ --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1\nfi\n"
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode prefill --attention-backend trtllm_mla --chunked-prefill-size -1 --context-length 136000 --data-parallel-size
-      1 --disable-radix-cache --disaggregation-bootstrap-port 30001 --disaggregation-transfer-backend nixl --enable-symm-mem
-      --expert-parallel-size 1 --kv-cache-dtype fp8_e4m3 --load-balance-method round_robin --max-total-tokens 544000 --mem-fraction-static
-      0.95 --moe-runner-backend flashinfer_trtllm --pipeline-parallel-size 4 --quantization modelopt_fp4 --scheduler-recv-interval
-      1 --stream-interval 10 --tensor-parallel-size 1 --trust-remote-code --watchdog-timeout 1000000 ${EXTRA_PREFILL_ARGS}
+      1 --disable-radix-cache --disaggregation-transfer-backend nixl --enable-symm-mem --expert-parallel-size 1 --kv-cache-dtype
+      fp8_e4m3 --load-balance-method round_robin --max-total-tokens 544000 --mem-fraction-static 0.95 --moe-runner-backend
+      flashinfer_trtllm --pipeline-parallel-size 4 --quantization modelopt_fp4 --scheduler-recv-interval 1 --stream-interval
+      10 --tensor-parallel-size 1 --trust-remote-code --watchdog-timeout 1000000 --disaggregation-bootstrap-port $(python3
+      -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
+      --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
     resources:
       gpus:
         count: ${{ variables.CTX_TP_SIZE }}
@@ -280,8 +314,7 @@ workflow:
   - name: decode_server
     operator:
       name: dynamo_sglang
-      ntasks: ${{ variables.GEN_TP_SIZE }}
-      ntasks_per_node: ${{ [ variables.GEN_TP_SIZE, variables.GPUS_PER_NODE ] | min }}
+      ntasks_per_node: 1
     replicas:
       count: ${{ variables.NUM_GEN_SERVERS }}
       policy: parallel
@@ -305,13 +338,27 @@ workflow:
     - export SGLANG_MOONCAKE_CUSTOM_MEM_POOL="True"
     - export SGLANG_USE_MESSAGE_QUEUE_BROADCASTER="0"
     - export TORCH_DISTRIBUTED_DEFAULT_TIMEOUT="1800"
+    - export FIRST_CUDA_DEVICE=$(echo ${CUDA_VISIBLE_DEVICES} | cut -d',' -f1)
+    - "if [ \"${GEN_ENABLE_ATTENTION_DP}\" == \"\" ]; then\n  export NODES_PER_WORKER=$(python3 -c \"print(max(int(${GEN_TP_SIZE}\
+      \ * ${GEN_DP_SIZE} * ${GEN_PP_SIZE} // ${GPUS_PER_NODE}), 1))\")\nelse\n  export NODES_PER_WORKER=$(python3 -c \"print(max(int(${GEN_TP_SIZE}\
+      \ * ${GEN_PP_SIZE} // ${GPUS_PER_NODE}), 1))\")\nfi\n"
+    - export NODE_RANK=${SLURM_NODEID}
+    - export FIRST_NODE_IP=$(echo ${SFLOW_TASK_ASSIGNED_NODE_IPS} | cut -d',' -f1)
+    - "if [ \"${NODES_PER_WORKER}\" -gt 1 ]; then\n  export MULTI_NODE_EXTRA_ARGS=\"--dist-init-addr ${FIRST_NODE_IP}:29500\
+      \ --nnodes ${NODES_PER_WORKER} --node-rank ${NODE_RANK}\"\nelse\n  export MULTI_NODE_EXTRA_ARGS=\"\"\nfi\n"
+    - export VLLM_NIXL_SIDE_CHANNEL_PORT=$((5557 + ${FIRST_CUDA_DEVICE}))
+    - export DYN_SYSTEM_PORT=$((8082 + ${FIRST_CUDA_DEVICE}))
+    - "# Check if dynamo.sglang module exists, if not install required packages\nif ! python3 -m dynamo.sglang --help >/dev/null\
+      \ 2>&1; then\n  echo \"dynamo.sglang not found, installing ai-dynamo packages...\"\n  pip install --break-system-packages\
+      \ --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1\nfi\n"
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode decode --attention-backend trtllm_mla --chunked-prefill-size -1 --context-length 136000 --cuda-graph-max-bs
-      256 --data-parallel-size 4 --disable-radix-cache --disaggregation-bootstrap-port 30001 --disaggregation-transfer-backend
-      nixl --enable-dp-attention --enable-symm-mem --expert-parallel-size 4 --kv-cache-dtype fp8_e4m3 --mem-fraction-static
-      0.95 --moe-runner-backend flashinfer_trtllm --pipeline-parallel-size 1 --prefill-round-robin-balance --quantization
-      modelopt_fp4 --scheduler-recv-interval 1 --stream-interval 10 --tensor-parallel-size 4 --trust-remote-code --watchdog-timeout
-      1000000 ${EXTRA_DECODE_ARGS}
+      256 --data-parallel-size 4 --disable-radix-cache --disaggregation-transfer-backend nixl --enable-dp-attention --enable-symm-mem
+      --expert-parallel-size 4 --kv-cache-dtype fp8_e4m3 --mem-fraction-static 0.95 --moe-runner-backend flashinfer_trtllm
+      --pipeline-parallel-size 1 --prefill-round-robin-balance --quantization modelopt_fp4 --scheduler-recv-interval 1 --stream-interval
+      10 --tensor-parallel-size 4 --trust-remote-code --watchdog-timeout 1000000 --disaggregation-bootstrap-port $(python3
+      -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()") ${MULTI_NODE_EXTRA_ARGS}
+      --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

@@ -3,12 +3,28 @@
 Convert srtslurm TRTLLM recipes under recipes/trtllm/ to sflow format
 following the structure of sflow_trtllm_disagg.yaml.
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
 import yaml
+
+
+class _LiteralBlockDumper(yaml.Dumper):
+    """YAML dumper that uses literal block style (|) for multi-line strings."""
+
+    pass
+
+
+def _literal_str_representer(dumper: yaml.Dumper, data: str):
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_LiteralBlockDumper.add_representer(str, _literal_str_representer)
 
 
 def _norm_container(container: str) -> str:
@@ -40,9 +56,7 @@ def _concurrency_domain(concurrencies) -> list[int]:
 
 def _yaml_to_literal_block(obj: dict) -> str:
     """Dump YAML dict to a string for artifact content (PyYAML will emit as block scalar)."""
-    return yaml.dump(
-        obj, default_flow_style=False, allow_unicode=True, sort_keys=False
-    ).rstrip()
+    return yaml.dump(obj, default_flow_style=False, allow_unicode=True, sort_keys=False).rstrip()
 
 
 def convert_recipe(recipe_path: Path, data: dict) -> dict:
@@ -136,11 +150,7 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         },
         "CTX_FREE_GPU_MEMORY_FRACTION": {
             "description": "Context free GPU memory fraction",
-            "value": float(
-                prefill_cfg.get("kv_cache_config", {}).get(
-                    "free_gpu_memory_fraction", 0.9
-                )
-            ),
+            "value": float(prefill_cfg.get("kv_cache_config", {}).get("free_gpu_memory_fraction", 0.9)),
         },
         "CTX_ENABLE_ATTENTION_DP": {
             "description": "Context enable attention DP",
@@ -186,11 +196,7 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         },
         "GEN_FREE_GPU_MEMORY_FRACTION": {
             "description": "Generation free GPU memory fraction",
-            "value": float(
-                decode_cfg.get("kv_cache_config", {}).get(
-                    "free_gpu_memory_fraction", 0.9
-                )
-            ),
+            "value": float(decode_cfg.get("kv_cache_config", {}).get("free_gpu_memory_fraction", 0.9)),
         },
         "GEN_ENABLE_ATTENTION_DP": {
             "description": "Generation enable attention DP",
@@ -334,6 +340,7 @@ def main() -> int:
             yaml.dump(
                 sflow,
                 f,
+                Dumper=_LiteralBlockDumper,
                 default_flow_style=False,
                 allow_unicode=True,
                 sort_keys=False,

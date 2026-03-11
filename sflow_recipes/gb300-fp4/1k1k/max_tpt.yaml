@@ -104,15 +104,37 @@ artifacts:
   uri: fs://${{ variables.MODEL_PATH }}
 - name: NGINX_CONFIG
   uri: file://nginx.conf
-  content: "worker_processes auto;\nhttp {\n    access_log off;\n    upstream backend_servers {\n        server ${{ backends.slurm_cluster.nodes[1].ip_address\
-    \ }}:8180;\n        server ${{ backends.slurm_cluster.nodes[2].ip_address }}:8180;\n        server ${{ backends.slurm_cluster.nodes[3].ip_address\
-    \ }}:8180;\n        server ${{ backends.slurm_cluster.nodes[4].ip_address }}:8180;\n        server ${{ backends.slurm_cluster.nodes[5].ip_address\
-    \ }}:8180;\n        server ${{ backends.slurm_cluster.nodes[6].ip_address }}:8180;\n        server ${{ backends.slurm_cluster.nodes[7].ip_address\
-    \ }}:8180;\n        server ${{ backends.slurm_cluster.nodes[8].ip_address }}:8180;\n        server ${{ backends.slurm_cluster.nodes[9].ip_address\
-    \ }}:8180;\n        server ${{ backends.slurm_cluster.nodes[10].ip_address }}:8180;\n    }\n    server {\n        listen\
-    \ 8000;\n        location / {\n            proxy_pass http://backend_servers;\n            proxy_buffering off;\n    \
-    \        proxy_read_timeout 24h;\n            proxy_send_timeout 24h;\n        }\n    }\n}\nevents {\n    worker_connections\
-    \ 65535;\n    multi_accept on;\n    use epoll;\n}"
+  content: |-
+    worker_processes auto;
+    http {
+        access_log off;
+        upstream backend_servers {
+            server ${{ backends.slurm_cluster.nodes[1].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[2].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[3].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[4].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[5].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[6].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[7].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[8].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[9].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[10].ip_address }}:8180;
+        }
+        server {
+            listen 8000;
+            location / {
+                proxy_pass http://backend_servers;
+                proxy_buffering off;
+                proxy_read_timeout 24h;
+                proxy_send_timeout 24h;
+            }
+        }
+    }
+    events {
+        worker_connections 65535;
+        multi_accept on;
+        use epoll;
+    }
 backends:
 - name: slurm_cluster
   type: slurm
@@ -193,11 +215,8 @@ workflow:
         count: ${{ variables.SLURM_NODES }}
     script:
     - echo "Starting gpu monitor"
-    - 'nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,power.draw,clocks.sm,clocks.mem,memory.total,memory.used
-      --format=csv,noheader,nounits -lms 2000 | while IFS= read -r input || [ -n "$input" ] ; do timestamp=$(date +%s%3N);
-      printf "%s.%s,%s\n" "${timestamp:0:10}" "${timestamp:10:3}" "${input}"; done >> ${SFLOW_TASK_OUTPUT_DIR}/gpu_monitor_node_${SLURM_NODEID}_${SLURMD_NODENAME}.log
-
-      '
+    - |
+      nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,power.draw,clocks.sm,clocks.mem,memory.total,memory.used --format=csv,noheader,nounits -lms 2000 | while IFS= read -r input || [ -n "$input" ] ; do timestamp=$(date +%s%3N); printf "%s.%s,%s\n" "${timestamp:0:10}" "${timestamp:10:3}" "${input}"; done >> ${SFLOW_TASK_OUTPUT_DIR}/gpu_monitor_node_${SLURM_NODEID}_${SLURMD_NODENAME}.log
     probes:
       readiness:
         log_watch:
@@ -210,6 +229,39 @@ workflow:
   - name: nats_server
     operator: dynamo_sglang
     script:
+    - |
+      # Check for and install nats-server if missing
+      if ! command -v nats-server >/dev/null 2>&1; then
+        mkdir -p configs
+        export NATS_VERSION=${NATS_VERSION:-v2.10.4}
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64)  ARCH_SHORT="amd64" ;;
+          aarch64) ARCH_SHORT="arm64" ;;
+          *) echo "❌ Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        echo "⬇️  Downloading NATS ($NATS_VERSION) for $ARCH_SHORT..."
+        NATS_DEB="nats-server-${NATS_VERSION}-$ARCH_SHORT.deb"
+        NATS_URL="https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/${NATS_DEB}"
+        wget -q --show-progress --tries=3 --waitretry=5 "$NATS_URL" -O "configs/${NATS_DEB}"
+        echo "📁 Extracting NATS binary..."
+        TMP_DIR=$(mktemp -d)
+        dpkg-deb -x "configs/${NATS_DEB}" "$TMP_DIR"
+        if [ -f "$TMP_DIR/usr/local/bin/nats-server" ]; then
+          cp "$TMP_DIR/usr/local/bin/nats-server" configs/
+        elif [ -f "$TMP_DIR/usr/bin/nats-server" ]; then
+          cp "$TMP_DIR/usr/bin/nats-server" configs/
+        else
+          echo "❌ Could not find nats-server binary inside the .deb package"
+          ls -R "$TMP_DIR" | head -n 50
+          exit 1
+        fi
+        chmod +x configs/nats-server
+        rm -rf "$TMP_DIR" "configs/${NATS_DEB}"
+        echo "✅ nats-server installed. Contents of configs directory:"
+        ls -lh configs/
+        export PATH="$PWD/configs:$PATH"
+      fi
     - nats-server -js
     resources:
       nodes:
@@ -227,11 +279,31 @@ workflow:
   - name: etcd_server
     operator: dynamo_sglang
     script:
-    - 'etcd --listen-client-urls "http://0.0.0.0:2379" --advertise-client-urls "http://0.0.0.0:2379" --listen-peer-urls "http://0.0.0.0:2380"
-      --initial-advertise-peer-urls "http://${HEAD_NODE_IP}:2380" --initial-cluster "default=http://${HEAD_NODE_IP}:2380"
-      --data-dir /tmp/etcd
-
-      '
+    - |
+      # Check for and install etcd if missing
+      if ! command -v etcd >/dev/null 2>&1; then
+        mkdir -p configs
+        export ETCD_VERSION=${ETCD_VERSION:-v3.5.12}
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64)  ARCH_SHORT="amd64" ;;
+          aarch64) ARCH_SHORT="arm64" ;;
+          *) echo "❌ Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        echo "⬇️  Downloading ETCD ($ETCD_VERSION) for $ARCH_SHORT..."
+        ETCD_TAR="etcd-${ETCD_VERSION}-linux-$ARCH_SHORT.tar.gz"
+        ETCD_URL="https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/${ETCD_TAR}"
+        wget -q --show-progress --tries=3 --waitretry=5 "$ETCD_URL" -O "configs/${ETCD_TAR}"
+        echo "📁 Extracting ETCD binaries..."
+        tar -xzf "configs/${ETCD_TAR}" --strip-components=1 -C configs etcd-${ETCD_VERSION}-linux-$ARCH_SHORT/etcd etcd-${ETCD_VERSION}-linux-$ARCH_SHORT/etcdctl
+        chmod +x configs/etcd configs/etcdctl
+        rm "configs/${ETCD_TAR}"
+        echo "✅ etcd and etcdctl installed. Contents of configs directory:"
+        ls -lh configs/
+        export PATH="$PWD/configs:$PATH"
+      fi
+    - |
+      etcd --listen-client-urls "http://0.0.0.0:2379" --advertise-client-urls "http://0.0.0.0:2379" --listen-peer-urls "http://0.0.0.0:2380" --initial-advertise-peer-urls "http://${HEAD_NODE_IP}:2380" --initial-cluster "default=http://${HEAD_NODE_IP}:2380" --data-dir /tmp/etcd
     resources:
       nodes:
         indices:
@@ -267,6 +339,12 @@ workflow:
       count: ${{ variables.NUM_FRONTENDS }}
       policy: parallel
     script:
+    - |
+      # Check if dynamo.sglang module exists, if not install required packages
+      if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
+        echo "dynamo.sglang not found, installing ai-dynamo packages..."
+        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1
+      fi
     - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
     resources:
       nodes:
@@ -306,18 +384,28 @@ workflow:
     - export SGLANG_USE_MESSAGE_QUEUE_BROADCASTER="0"
     - export SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK="1"
     - export FIRST_CUDA_DEVICE=$(echo ${CUDA_VISIBLE_DEVICES} | cut -d',' -f1)
-    - "if [ \"${CTX_ENABLE_ATTENTION_DP}\" == \"\" ]; then\n  export NODES_PER_WORKER=$(python3 -c \"print(max(int(${CTX_TP_SIZE}\
-      \ * ${CTX_DP_SIZE} * ${CTX_PP_SIZE} // ${GPUS_PER_NODE}), 1))\")\nelse\n  export NODES_PER_WORKER=$(python3 -c \"print(max(int(${CTX_TP_SIZE}\
-      \ * ${CTX_PP_SIZE} // ${GPUS_PER_NODE}), 1))\")\nfi\n"
+    - |
+      if [ "${CTX_ENABLE_ATTENTION_DP}" == "" ]; then
+        export NODES_PER_WORKER=$(python3 -c "print(max(int(${CTX_TP_SIZE} * ${CTX_DP_SIZE} * ${CTX_PP_SIZE} // ${GPUS_PER_NODE}), 1))")
+      else
+        export NODES_PER_WORKER=$(python3 -c "print(max(int(${CTX_TP_SIZE} * ${CTX_PP_SIZE} // ${GPUS_PER_NODE}), 1))")
+      fi
     - export NODE_RANK=${SLURM_NODEID}
     - export FIRST_NODE_IP=$(echo ${SFLOW_TASK_ASSIGNED_NODE_IPS} | cut -d',' -f1)
-    - "if [ \"${NODES_PER_WORKER}\" -gt 1 ]; then\n  export MULTI_NODE_EXTRA_ARGS=\"--dist-init-addr ${FIRST_NODE_IP}:29500\
-      \ --nnodes ${NODES_PER_WORKER} --node-rank ${NODE_RANK}\"\nelse\n  export MULTI_NODE_EXTRA_ARGS=\"\"\nfi\n"
+    - |
+      if [ "${NODES_PER_WORKER}" -gt 1 ]; then
+        export MULTI_NODE_EXTRA_ARGS="--dist-init-addr ${FIRST_NODE_IP}:29500 --nnodes ${NODES_PER_WORKER} --node-rank ${NODE_RANK}"
+      else
+        export MULTI_NODE_EXTRA_ARGS=""
+      fi
     - export VLLM_NIXL_SIDE_CHANNEL_PORT=$((5557 + ${FIRST_CUDA_DEVICE}))
     - export DYN_SYSTEM_PORT=$((8082 + ${FIRST_CUDA_DEVICE}))
-    - "# Check if dynamo.sglang module exists, if not install required packages\nif ! python3 -m dynamo.sglang --help >/dev/null\
-      \ 2>&1; then\n  echo \"dynamo.sglang not found, installing ai-dynamo packages...\"\n  pip install --break-system-packages\
-      \ --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1\nfi\n"
+    - |
+      # Check if dynamo.sglang module exists, if not install required packages
+      if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
+        echo "dynamo.sglang not found, installing ai-dynamo packages..."
+        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1
+      fi
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode prefill --trust-remote-code --kv-cache-dtype fp8_e4m3 --attention-backend trtllm_mla --quantization
       modelopt_fp4 --moe-runner-backend flashinfer_cutlass --disable-radix-cache --disable-chunked-prefix-cache --stream-interval
@@ -374,18 +462,28 @@ workflow:
     - export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK="1024"
     - export SGLANG_MOE_NVFP4_DISPATCH="1"
     - export FIRST_CUDA_DEVICE=$(echo ${CUDA_VISIBLE_DEVICES} | cut -d',' -f1)
-    - "if [ \"${GEN_ENABLE_ATTENTION_DP}\" == \"\" ]; then\n  export NODES_PER_WORKER=$(python3 -c \"print(max(int(${GEN_TP_SIZE}\
-      \ * ${GEN_DP_SIZE} * ${GEN_PP_SIZE} // ${GPUS_PER_NODE}), 1))\")\nelse\n  export NODES_PER_WORKER=$(python3 -c \"print(max(int(${GEN_TP_SIZE}\
-      \ * ${GEN_PP_SIZE} // ${GPUS_PER_NODE}), 1))\")\nfi\n"
+    - |
+      if [ "${GEN_ENABLE_ATTENTION_DP}" == "" ]; then
+        export NODES_PER_WORKER=$(python3 -c "print(max(int(${GEN_TP_SIZE} * ${GEN_DP_SIZE} * ${GEN_PP_SIZE} // ${GPUS_PER_NODE}), 1))")
+      else
+        export NODES_PER_WORKER=$(python3 -c "print(max(int(${GEN_TP_SIZE} * ${GEN_PP_SIZE} // ${GPUS_PER_NODE}), 1))")
+      fi
     - export NODE_RANK=${SLURM_NODEID}
     - export FIRST_NODE_IP=$(echo ${SFLOW_TASK_ASSIGNED_NODE_IPS} | cut -d',' -f1)
-    - "if [ \"${NODES_PER_WORKER}\" -gt 1 ]; then\n  export MULTI_NODE_EXTRA_ARGS=\"--dist-init-addr ${FIRST_NODE_IP}:29500\
-      \ --nnodes ${NODES_PER_WORKER} --node-rank ${NODE_RANK}\"\nelse\n  export MULTI_NODE_EXTRA_ARGS=\"\"\nfi\n"
+    - |
+      if [ "${NODES_PER_WORKER}" -gt 1 ]; then
+        export MULTI_NODE_EXTRA_ARGS="--dist-init-addr ${FIRST_NODE_IP}:29500 --nnodes ${NODES_PER_WORKER} --node-rank ${NODE_RANK}"
+      else
+        export MULTI_NODE_EXTRA_ARGS=""
+      fi
     - export VLLM_NIXL_SIDE_CHANNEL_PORT=$((5557 + ${FIRST_CUDA_DEVICE}))
     - export DYN_SYSTEM_PORT=$((8082 + ${FIRST_CUDA_DEVICE}))
-    - "# Check if dynamo.sglang module exists, if not install required packages\nif ! python3 -m dynamo.sglang --help >/dev/null\
-      \ 2>&1; then\n  echo \"dynamo.sglang not found, installing ai-dynamo packages...\"\n  pip install --break-system-packages\
-      \ --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1\nfi\n"
+    - |
+      # Check if dynamo.sglang module exists, if not install required packages
+      if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
+        echo "dynamo.sglang not found, installing ai-dynamo packages..."
+        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1
+      fi
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode decode --trust-remote-code --kv-cache-dtype fp8_e4m3 --attention-backend trtllm_mla --quantization
       modelopt_fp4 --moe-runner-backend flashinfer_cutedsl --disable-radix-cache --disable-chunked-prefix-cache --stream-interval
@@ -424,17 +522,8 @@ workflow:
     script:
     - set -x
     - export COLUMNS=200
-    - 'aiperf profile --artifact-dir ${SFLOW_WORKFLOW_OUTPUT_DIR}/aiperf_concurrency_${CONCURRENCY} --model ${{ variables.SERVED_MODEL_NAME
-      }} --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} --endpoint-type chat --endpoint /v1/chat/completions --streaming
-      --url http://${{ variables.HEAD_NODE_IP }}:8000 --synthetic-input-tokens-mean ${{ variables.ISL }} --synthetic-input-tokens-stddev
-      0 --output-tokens-mean ${{ variables.OSL }} --output-tokens-stddev 0 --extra-inputs "max_tokens:${{ variables.OSL }}"
-      --extra-inputs "min_tokens:${{ variables.OSL }}" --extra-inputs "ignore_eos:true" --extra-inputs "{\"nvext\":{\"ignore_eos\":true}}"
-      --extra-inputs "repetition_penalty:1.0" --extra-inputs "temperature: 0.0" --concurrency ${CONCURRENCY} --request-count
-      $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) --warmup-request-count ${CONCURRENCY} --num-dataset-entries $((${{
-      variables.MULTI_ROUND }}*${CONCURRENCY})) --random-seed 100 -H ''Authorization: Bearer NOT USED'' -H ''Accept: text/event-stream''
-      --record-processors 8 --ui simple
-
-      '
+    - |
+      aiperf profile --artifact-dir ${SFLOW_WORKFLOW_OUTPUT_DIR}/aiperf_concurrency_${CONCURRENCY} --model ${{ variables.SERVED_MODEL_NAME }} --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} --endpoint-type chat --endpoint /v1/chat/completions --streaming --url http://${{ variables.HEAD_NODE_IP }}:8000 --synthetic-input-tokens-mean ${{ variables.ISL }} --synthetic-input-tokens-stddev 0 --output-tokens-mean ${{ variables.OSL }} --output-tokens-stddev 0 --extra-inputs "max_tokens:${{ variables.OSL }}" --extra-inputs "min_tokens:${{ variables.OSL }}" --extra-inputs "ignore_eos:true" --extra-inputs "{\"nvext\":{\"ignore_eos\":true}}" --extra-inputs "repetition_penalty:1.0" --extra-inputs "temperature: 0.0" --concurrency ${CONCURRENCY} --request-count $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) --warmup-request-count ${CONCURRENCY} --num-dataset-entries $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) --random-seed 100 -H 'Authorization: Bearer NOT USED' -H 'Accept: text/event-stream' --record-processors 8 --ui simple
     - echo "Benchmarking finished"
     resources:
       nodes:

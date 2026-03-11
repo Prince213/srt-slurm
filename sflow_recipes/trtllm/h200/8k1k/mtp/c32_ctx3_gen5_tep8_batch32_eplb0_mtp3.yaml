@@ -21,26 +21,6 @@ variables:
   MODEL_PATH:
     description: Model path (fs or name)
     value: dsr1
-  EXTRA_FRONTEND_ARGS:
-    description: Extra frontend arguments
-    value: ''
-  ISL:
-    description: Input sequence length
-    value: 8192
-  OSL:
-    description: Output sequence length
-    value: 1024
-  MULTI_ROUND:
-    description: Number of benchmark rounds
-    value: 8
-  CONCURRENCY:
-    description: Concurrency
-    value: 160
-    domain:
-    - 160
-  AIPERF_IMAGE:
-    description: AIPerf container image
-    value: gitlab-master.nvidia.com/perflab-compute/unified-benchmarks/aiperf:0.3.0-x86
   NUM_CTX_SERVERS:
     description: Number of context/prefill servers
     value: 3
@@ -116,12 +96,32 @@ variables:
   GEN_ENABLE_ATTENTION_DP:
     description: Generation enable attention DP
     value: false
+  EXTRA_FRONTEND_ARGS:
+    description: Extra frontend arguments
+    value: ''
   EXTRA_PREFILL_ARGS:
     description: Extra prefill arguments
     value: ''
   EXTRA_DECODE_ARGS:
     description: Extra decode arguments
     value: ''
+  ISL:
+    description: Input sequence length
+    value: 8192
+  OSL:
+    description: Output sequence length
+    value: 1024
+  MULTI_ROUND:
+    description: Number of benchmark rounds
+    value: 8
+  CONCURRENCY:
+    description: Concurrency
+    value: 160
+    domain:
+    - 160
+  AIPERF_IMAGE:
+    description: AIPerf container image
+    value: gitlab-master.nvidia.com/perflab-compute/unified-benchmarks/aiperf:0.3.0-x86
   DYNAMO_IMAGE:
     description: Dynamo TRTLLM container image
     value: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.8.1.post1
@@ -130,21 +130,73 @@ artifacts:
   uri: fs://${{ variables.MODEL_PATH }}
 - name: PREFILL_CONFIG
   uri: file://prefill_config.yaml
-  content: "backend: pytorch\ntrust_remote_code: true\ntensor_parallel_size: 8\nmoe_expert_parallel_size: 8\npipeline_parallel_size:\
-    \ 1\nenable_attention_dp: false\nenable_chunked_prefill: false\nmax_batch_size: 2\nmax_num_tokens: 16640\nmax_seq_len:\
-    \ 8232\nkv_cache_config:\n  enable_block_reuse: false\n  free_gpu_memory_fraction: 0.85\n  dtype: fp8\ncache_transceiver_config:\n\
-    \  backend: UCX\n  max_tokens_in_buffer: 32768\nmoe_config:\n  backend: CUTLASS\ncuda_graph_config: null\ndisable_overlap_scheduler:\
-    \ true\nprint_iter_log: true\nstream_interval: 100\nnum_postprocess_workers: 4\nspeculative_config:\n  decoding_type:\
-    \ MTP\n  num_nextn_predict_layers: 3"
+  content: |-
+    backend: pytorch
+    trust_remote_code: true
+    tensor_parallel_size: 8
+    moe_expert_parallel_size: 8
+    pipeline_parallel_size: 1
+    enable_attention_dp: false
+    enable_chunked_prefill: false
+    max_batch_size: 2
+    max_num_tokens: 16640
+    max_seq_len: 8232
+    kv_cache_config:
+      enable_block_reuse: false
+      free_gpu_memory_fraction: 0.85
+      dtype: fp8
+    cache_transceiver_config:
+      backend: UCX
+      max_tokens_in_buffer: 32768
+    moe_config:
+      backend: CUTLASS
+    cuda_graph_config: null
+    disable_overlap_scheduler: true
+    print_iter_log: true
+    stream_interval: 100
+    num_postprocess_workers: 4
+    speculative_config:
+      decoding_type: MTP
+      num_nextn_predict_layers: 3
 - name: DECODE_CONFIG
   uri: file://decode_config.yaml
-  content: "backend: pytorch\ntrust_remote_code: true\ntensor_parallel_size: 8\nmoe_expert_parallel_size: 8\npipeline_parallel_size:\
-    \ 1\nenable_attention_dp: false\nenable_chunked_prefill: false\nmax_batch_size: 32\nmax_num_tokens: 128\nmax_seq_len:\
-    \ 9256\nkv_cache_config:\n  enable_block_reuse: false\n  free_gpu_memory_fraction: 0.85\n  dtype: fp8\ncache_transceiver_config:\n\
-    \  backend: UCX\n  max_tokens_in_buffer: 16384\nmoe_config:\n  backend: CUTLASS\n  use_low_precision_moe_combine: true\n\
-    cuda_graph_config:\n  enable_padding: true\n  batch_sizes:\n  - 1\n  - 2\n  - 4\n  - 8\n  - 16\n  - 32\ndisable_overlap_scheduler:\
-    \ false\nprint_iter_log: true\nstream_interval: 100\nnum_postprocess_workers: 4\nspeculative_config:\n  decoding_type:\
-    \ MTP\n  num_nextn_predict_layers: 3"
+  content: |-
+    backend: pytorch
+    trust_remote_code: true
+    tensor_parallel_size: 8
+    moe_expert_parallel_size: 8
+    pipeline_parallel_size: 1
+    enable_attention_dp: false
+    enable_chunked_prefill: false
+    max_batch_size: 32
+    max_num_tokens: 128
+    max_seq_len: 9256
+    kv_cache_config:
+      enable_block_reuse: false
+      free_gpu_memory_fraction: 0.85
+      dtype: fp8
+    cache_transceiver_config:
+      backend: UCX
+      max_tokens_in_buffer: 16384
+    moe_config:
+      backend: CUTLASS
+      use_low_precision_moe_combine: true
+    cuda_graph_config:
+      enable_padding: true
+      batch_sizes:
+      - 1
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+    disable_overlap_scheduler: false
+    print_iter_log: true
+    stream_interval: 100
+    num_postprocess_workers: 4
+    speculative_config:
+      decoding_type: MTP
+      num_nextn_predict_layers: 3
 backends:
 - name: slurm_cluster
   type: slurm
@@ -221,11 +273,8 @@ workflow:
         count: ${{ variables.SLURM_NODES }}
     script:
     - echo "Starting gpu monitor"
-    - 'nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,power.draw,clocks.sm,clocks.mem,memory.total,memory.used  --format=csv,noheader,nounits
-      -lms 2000 |  while IFS= read -r input || [ -n "$input" ] ;  do timestamp=$(date +%s%3N);  printf "%s.%s,%s\n" "${timestamp:0:10}"
-      "${timestamp:10:3}" "${input}";  done  >> ${SFLOW_TASK_OUTPUT_DIR}/gpu_monitor_node_${SLURM_NODEID}_${SLURMD_NODENAME}.log
-
-      '
+    - |
+      nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,power.draw,clocks.sm,clocks.mem,memory.total,memory.used  --format=csv,noheader,nounits -lms 2000 |  while IFS= read -r input || [ -n "$input" ] ;  do timestamp=$(date +%s%3N);  printf "%s.%s,%s\n" "${timestamp:0:10}" "${timestamp:10:3}" "${input}";  done  >> ${SFLOW_TASK_OUTPUT_DIR}/gpu_monitor_node_${SLURM_NODEID}_${SLURMD_NODENAME}.log
     probes:
       readiness:
         log_watch:
@@ -255,11 +304,8 @@ workflow:
   - name: etcd_server
     operator: dynamo_trtllm
     script:
-    - 'etcd --listen-client-urls "http://0.0.0.0:2379" --advertise-client-urls "http://0.0.0.0:2379" --listen-peer-urls "http://0.0.0.0:2380"
-      --initial-advertise-peer-urls "http://${HEAD_NODE_IP}:2380" --initial-cluster "default=http://${HEAD_NODE_IP}:2380"
-      --data-dir /tmp/etcd
-
-      '
+    - |
+      etcd --listen-client-urls "http://0.0.0.0:2379" --advertise-client-urls "http://0.0.0.0:2379" --listen-peer-urls "http://0.0.0.0:2380" --initial-advertise-peer-urls "http://${HEAD_NODE_IP}:2380" --initial-cluster "default=http://${HEAD_NODE_IP}:2380" --data-dir /tmp/etcd
     resources:
       nodes:
         indices:
@@ -371,17 +417,8 @@ workflow:
     script:
     - set -x
     - export COLUMNS=200
-    - 'aiperf profile --artifact-dir ${SFLOW_WORKFLOW_OUTPUT_DIR}/aiperf_concurrency_${CONCURRENCY} --model ${{ variables.SERVED_MODEL_NAME
-      }} --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} --endpoint-type chat --endpoint /v1/chat/completions --streaming
-      --url http://${{ variables.HEAD_NODE_IP }}:8000 --synthetic-input-tokens-mean ${{ variables.ISL }} --synthetic-input-tokens-stddev
-      0 --output-tokens-mean ${{ variables.OSL }} --output-tokens-stddev 0 --extra-inputs "max_tokens:${{ variables.OSL }}"
-      --extra-inputs "min_tokens:${{ variables.OSL }}" --extra-inputs "ignore_eos:true" --extra-inputs "{\"nvext\":{\"ignore_eos\":true}}"
-      --extra-inputs "repetition_penalty:1.0" --extra-inputs "temperature: 0.0" --concurrency ${CONCURRENCY} --request-count
-      $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) --warmup-request-count ${CONCURRENCY} --num-dataset-entries $((${{
-      variables.MULTI_ROUND }}*${CONCURRENCY})) --random-seed 100 -H ''Authorization: Bearer NOT USED'' -H ''Accept: text/event-stream''
-      --record-processors 8 --ui simple
-
-      '
+    - |
+      aiperf profile --artifact-dir ${SFLOW_WORKFLOW_OUTPUT_DIR}/aiperf_concurrency_${CONCURRENCY} --model ${{ variables.SERVED_MODEL_NAME }} --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} --endpoint-type chat --endpoint /v1/chat/completions --streaming --url http://${{ variables.HEAD_NODE_IP }}:8000 --synthetic-input-tokens-mean ${{ variables.ISL }} --synthetic-input-tokens-stddev 0 --output-tokens-mean ${{ variables.OSL }} --output-tokens-stddev 0 --extra-inputs "max_tokens:${{ variables.OSL }}" --extra-inputs "min_tokens:${{ variables.OSL }}" --extra-inputs "ignore_eos:true" --extra-inputs "{\"nvext\":{\"ignore_eos\":true}}" --extra-inputs "repetition_penalty:1.0" --extra-inputs "temperature: 0.0" --concurrency ${CONCURRENCY} --request-count $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) --warmup-request-count ${CONCURRENCY} --num-dataset-entries $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) --random-seed 100 -H 'Authorization: Bearer NOT USED' -H 'Accept: text/event-stream' --record-processors 8 --ui simple
     - echo "Benchmarking finished"
     resources:
       nodes:

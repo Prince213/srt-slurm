@@ -14,6 +14,21 @@ from typing import Any
 
 import yaml
 
+
+class _LiteralBlockDumper(yaml.Dumper):
+    """YAML dumper that uses literal block style (|) for multi-line strings."""
+
+    pass
+
+
+def _literal_str_representer(dumper: yaml.Dumper, data: str):
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_LiteralBlockDumper.add_representer(str, _literal_str_representer)
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -229,13 +244,7 @@ def _get_frontend_extra_args(data: dict) -> str:
 
 def _load_template_worker_script(task_name: str) -> list[str]:
     """Load a worker task's script from the sflow_sglang_disagg.yaml template."""
-    template_path = Path(__file__).resolve().parent.parent / "sflow_sglang_disagg.yaml"
-    with open(template_path, encoding="utf-8") as f:
-        template = yaml.safe_load(f)
-    for task in template["workflow"]["tasks"]:
-        if task["name"] == task_name:
-            return list(task["script"])
-    raise ValueError(f"Task {task_name!r} not found in template")
+    return list(_get_template_task(task_name)["script"])
 
 
 def _build_sglang_server_script(
@@ -423,8 +432,32 @@ def _build_operators(*, enable_multi_frontend: bool) -> list[dict]:
     return ops
 
 
+def _load_template() -> dict:
+    """Load and cache the sflow_sglang_disagg.yaml template."""
+    if not hasattr(_load_template, "_cache"):
+        template_path = Path(__file__).resolve().parent.parent / "sflow_sglang_disagg.yaml"
+        with open(template_path, encoding="utf-8") as f:
+            _load_template._cache = yaml.safe_load(f)
+    return _load_template._cache
+
+
+def _get_template_task(task_name: str) -> dict:
+    """Get a task dict from the template by name."""
+    for task in _load_template()["workflow"]["tasks"]:
+        if task["name"] == task_name:
+            return task
+    raise ValueError(f"Task {task_name!r} not found in template")
+
+
 def _build_infra_tasks() -> list[dict]:
-    """Build infrastructure tasks: load_image, install_aiperf, gpu_monitor, nats, etcd."""
+    """Build infrastructure tasks: load_image, install_aiperf, gpu_monitor, nats, etcd.
+
+    nats_server and etcd_server scripts are loaded from the template to preserve
+    install-check infrastructure.
+    """
+    nats_tmpl = _get_template_task("nats_server")
+    etcd_tmpl = _get_template_task("etcd_server")
+
     return [
         {
             "name": "load_image",
@@ -479,7 +512,7 @@ def _build_infra_tasks() -> list[dict]:
         {
             "name": "nats_server",
             "operator": "dynamo_sglang",
-            "script": ["nats-server -js"],
+            "script": list(nats_tmpl["script"]),
             "resources": {"nodes": {"indices": [0]}},
             "probes": {
                 "readiness": {
@@ -493,7 +526,7 @@ def _build_infra_tasks() -> list[dict]:
         {
             "name": "etcd_server",
             "operator": "dynamo_sglang",
-            "script": [_ETCD_CMD],
+            "script": list(etcd_tmpl["script"]),
             "resources": {"nodes": {"indices": [0]}},
             "probes": {
                 "readiness": {
@@ -525,6 +558,14 @@ def _build_nginx_task() -> dict:
 
 
 def _build_frontend_task() -> dict:
+    """Build frontend_server task, preserving install-check script from template."""
+    fe_tmpl = _get_template_task("frontend_server")
+    # Keep install-check lines from template, replace the launch command
+    tmpl_script = list(fe_tmpl["script"])
+    tmpl_script[-1] = (
+        "python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}"
+    )
+
     return {
         "name": "frontend_server",
         "operator": "dynamo_sglang",
@@ -532,9 +573,7 @@ def _build_frontend_task() -> dict:
             "count": "${{ variables.NUM_FRONTENDS }}",
             "policy": "parallel",
         },
-        "script": [
-            "python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}"
-        ],
+        "script": tmpl_script,
         "resources": {"nodes": {"count": 1}},
         "probes": {
             "readiness": {
@@ -1046,6 +1085,7 @@ def main() -> int:
             yaml.dump(
                 sflow,
                 f,
+                Dumper=_LiteralBlockDumper,
                 default_flow_style=False,
                 allow_unicode=True,
                 sort_keys=False,

@@ -107,8 +107,8 @@ artifacts:
     http {
         access_log off;
         upstream backend_servers {
+            server ${{ backends.slurm_cluster.nodes[0].ip_address }}:8180;
             server ${{ backends.slurm_cluster.nodes[1].ip_address }}:8180;
-            server ${{ backends.slurm_cluster.nodes[2].ip_address }}:8180;
         }
         server {
             listen 8000;

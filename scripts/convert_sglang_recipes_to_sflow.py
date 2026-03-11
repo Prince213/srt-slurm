@@ -82,7 +82,9 @@ def _sglang_config_to_cli_args(config: dict[str, Any]) -> list[str]:
     return args
 
 
-def _generate_nginx_config(num_frontends: int, slurm_nodes: int, frontend_port: int = 8180) -> str:
+def _generate_nginx_config(
+    num_frontends: int, slurm_nodes: int, frontend_port: int = 8180
+) -> str:
     """Generate nginx config content with sflow node IP expressions."""
     actual_count = min(num_frontends, slurm_nodes - 1)
     lines = [
@@ -91,8 +93,10 @@ def _generate_nginx_config(num_frontends: int, slurm_nodes: int, frontend_port: 
         "    access_log off;",
         "    upstream backend_servers {",
     ]
-    for i in range(1, actual_count + 1):
-        lines.append(f"        server ${{{{ backends.slurm_cluster.nodes[{i}].ip_address }}}}:{frontend_port};")
+    for i in range(0, actual_count):
+        lines.append(
+            f"        server ${{{{ backends.slurm_cluster.nodes[{i}].ip_address }}}}:{frontend_port};"
+        )
     lines.extend(
         [
             "    }",
@@ -177,7 +181,12 @@ def _get_sglang_dp(config: dict[str, Any]) -> int:
 
 def _get_sglang_pp(config: dict[str, Any]) -> int:
     """Extract pipeline-parallel size from sglang_config dict."""
-    for key in ("pp-size", "pipeline-parallel-size", "pp_size", "pipeline_parallel_size"):
+    for key in (
+        "pp-size",
+        "pipeline-parallel-size",
+        "pp_size",
+        "pipeline_parallel_size",
+    ):
         if key in config:
             return int(config[key])
     return 1
@@ -198,7 +207,9 @@ def _is_aggregated_recipe(data: dict) -> bool:
         return True
     sglang_config = data.get("backend", {}).get("sglang_config") or {}
     return bool(
-        sglang_config.get("aggregated") and not sglang_config.get("prefill") and not sglang_config.get("decode")
+        sglang_config.get("aggregated")
+        and not sglang_config.get("prefill")
+        and not sglang_config.get("decode")
     )
 
 
@@ -212,16 +223,24 @@ def _sglang_container(model: dict) -> str:
     return container
 
 
-def _get_frontend_config(data: dict) -> tuple[bool, int, str]:
+def _get_frontend_config(data: dict, slurm_nodes: int) -> tuple[bool, int, str]:
     """Extract multi-frontend settings from recipe.
+
+    Matches srt-slurm FrontendConfig defaults (enable_multiple_frontends=True)
+    and topology rules: single-node disables multi-frontend regardless of config.
 
     Returns:
         (enable_multi, num_frontends, nginx_container)
     """
     fe = data.get("frontend", {})
-    enable = fe.get("enable_multiple_frontends", False)
+    enable = fe.get("enable_multiple_frontends", True)
     num_additional = int(fe.get("num_additional_frontends", 9))
     nginx_container = fe.get("nginx_container", "nginx:1.27.4")
+
+    # Match srt-slurm topology rule: single node → no multi-frontend
+    if slurm_nodes <= 1:
+        enable = False
+
     return enable, num_additional + 1, nginx_container
 
 
@@ -435,7 +454,9 @@ def _build_operators(*, enable_multi_frontend: bool) -> list[dict]:
 def _load_template() -> dict:
     """Load and cache the sflow_sglang_disagg.yaml template."""
     if not hasattr(_load_template, "_cache"):
-        template_path = Path(__file__).resolve().parent.parent / "sflow_sglang_disagg.yaml"
+        template_path = (
+            Path(__file__).resolve().parent.parent / "sflow_sglang_disagg.yaml"
+        )
         with open(template_path, encoding="utf-8") as f:
             _load_template._cache = yaml.safe_load(f)
     return _load_template._cache
@@ -685,10 +706,14 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
     concurrency_domain = _concurrency_domain(benchmark.get("concurrencies", "50"))
 
     served_model_name = (
-        prefill_cfg.get("served-model-name") or prefill_cfg.get("served_model_name") or model_path.replace("/", "-")
+        prefill_cfg.get("served-model-name")
+        or prefill_cfg.get("served_model_name")
+        or model_path.replace("/", "-")
     )
 
-    enable_multi, num_frontends, nginx_container = _get_frontend_config(data)
+    enable_multi, num_frontends, nginx_container = _get_frontend_config(
+        data, slurm_nodes
+    )
     frontend_extra = _get_frontend_extra_args(data)
 
     for cfg in (prefill_cfg, decode_cfg):
@@ -811,7 +836,9 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
     if enable_multi:
         actual_frontends = min(num_frontends, slurm_nodes - 1)
         nginx_cfg = _generate_nginx_config(actual_frontends, slurm_nodes, 8180)
-        artifacts.append({"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg})
+        artifacts.append(
+            {"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg}
+        )
 
     prefill_tmpl_script = _load_template_worker_script("prefill_server")
     decode_tmpl_script = _load_template_worker_script("decode_server")
@@ -904,10 +931,14 @@ def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
     concurrency_domain = _concurrency_domain(benchmark.get("concurrencies", "50"))
 
     served_model_name = (
-        agg_cfg.get("served-model-name") or agg_cfg.get("served_model_name") or model_path.replace("/", "-")
+        agg_cfg.get("served-model-name")
+        or agg_cfg.get("served_model_name")
+        or model_path.replace("/", "-")
     )
 
-    enable_multi, num_frontends, nginx_container = _get_frontend_config(data)
+    enable_multi, num_frontends, nginx_container = _get_frontend_config(
+        data, slurm_nodes
+    )
     frontend_extra = _get_frontend_extra_args(data)
 
     for k in ("served-model-name", "served_model_name"):
@@ -982,9 +1013,13 @@ def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
     if enable_multi:
         actual_frontends = min(num_frontends, slurm_nodes - 1)
         nginx_cfg = _generate_nginx_config(actual_frontends, slurm_nodes, 8180)
-        artifacts.append({"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg})
+        artifacts.append(
+            {"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg}
+        )
 
-    agg_script = _build_sglang_agg_server_script(agg_env, agg_cli, extra_args_var="EXTRA_AGG_ARGS")
+    agg_script = _build_sglang_agg_server_script(
+        agg_env, agg_cli, extra_args_var="EXTRA_AGG_ARGS"
+    )
 
     tasks = _build_infra_tasks()
     if enable_multi:
@@ -1047,7 +1082,11 @@ def main() -> int:
         return 1
 
     trtllm_dir = recipes_dir / "trtllm"
-    yaml_files = [p for p in sorted(recipes_dir.rglob("*.yaml")) if not p.is_relative_to(trtllm_dir)]
+    yaml_files = [
+        p
+        for p in sorted(recipes_dir.rglob("*.yaml"))
+        if not p.is_relative_to(trtllm_dir)
+    ]
     if not yaml_files:
         print(f"No YAML files under {recipes_dir} (excluding trtllm)", file=sys.stderr)
         return 1

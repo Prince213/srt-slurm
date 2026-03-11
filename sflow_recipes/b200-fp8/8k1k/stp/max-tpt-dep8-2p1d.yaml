@@ -2,10 +2,10 @@ version: '0.1'
 variables:
   SLURM_ACCOUNT:
     description: SLURM account
-    value: rogliu
+    value: coreai_tritoninference_triton3
   SLURM_PARTITION:
     description: SLURM partition
-    value: gamoraq
+    value: batch
   SLURM_TIMELIMIT:
     description: SLURM time limit
     value: 120
@@ -21,7 +21,7 @@ variables:
     value: deepseek-ai/DeepSeek-R1
   MODEL_PATH:
     description: Model path (fs or name)
-    value: dsr1-fp8
+    value: /lustre/fsw/portfolios/general/projects/general_perflab/users/rogliu/gcn/HF_CACHE/DS-R1-0528
   EXTRA_FRONTEND_ARGS:
     description: Extra frontend arguments
     value: ''

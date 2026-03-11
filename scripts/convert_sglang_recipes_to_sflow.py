@@ -562,11 +562,15 @@ def _build_infra_tasks() -> list[dict]:
 
 
 def _build_nginx_task(*, gpu_type: str) -> dict:
-    nginx_bin = "/usr/sbin/nginx" if gpu_type.startswith(("gb200", "gb300")) else "nginx"
+    nginx_bin = (
+        "/usr/sbin/nginx" if gpu_type.startswith(("gb200", "gb300")) else "nginx"
+    )
     return {
         "name": "nginx_server",
         "operator": "nginx",
-        "script": [f"{nginx_bin} -c ${{{{ artifacts.NGINX_CONFIG.path }}}} -g 'daemon off;'"],
+        "script": [
+            f"{nginx_bin} -c ${{{{ artifacts.NGINX_CONFIG.path }}}} -g 'daemon off;'"
+        ],
         "resources": {"nodes": {"indices": [0]}},
         "probes": {
             "readiness": {
@@ -631,7 +635,7 @@ def _build_worker_task(
         "depends_on": ["frontend_server"],
         "probes": {
             "readiness": {
-                "log_watch": {"regex_pattern": "The server is fired up"},
+                "log_watch": {"regex_pattern": "orker handler initialized"},
                 "timeout": 900,
                 "interval": 10,
             },

@@ -403,7 +403,7 @@ workflow:
     probes:
       readiness:
         log_watch:
-          regex_pattern: The server is fired up
+          regex_pattern: orker handler initialized
         timeout: 900
         interval: 10
       failure:
@@ -467,7 +467,7 @@ workflow:
     probes:
       readiness:
         log_watch:
-          regex_pattern: The server is fired up
+          regex_pattern: orker handler initialized
         timeout: 900
         interval: 10
       failure:

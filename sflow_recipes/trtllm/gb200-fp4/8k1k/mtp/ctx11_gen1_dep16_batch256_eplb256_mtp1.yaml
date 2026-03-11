@@ -14,6 +14,7 @@ variables:
     value: 4
   SLURM_NODES:
     description: Number of nodes
+    type: integer
     value: 17
   SERVED_MODEL_NAME:
     description: Served model name
@@ -125,6 +126,15 @@ variables:
   DYNAMO_IMAGE:
     description: Dynamo TRTLLM container image
     value: dynamo-trtllm
+  NUM_FRONTENDS:
+    description: Number of frontend instances
+    value: 10
+  FRONTEND_PORT:
+    description: Frontend listening port (8180 behind nginx, 8000 direct)
+    value: 8180
+  NGINX_IMAGE:
+    description: Nginx container image
+    value: nginx:1.27.4
 artifacts:
 - name: LOCAL_MODEL_PATH
   uri: fs://${{ variables.MODEL_PATH }}
@@ -233,6 +243,39 @@ artifacts:
     speculative_config:
       decoding_type: MTP
       num_nextn_predict_layers: 1
+- name: NGINX_CONFIG
+  uri: file://nginx.conf
+  content: |-
+    worker_processes auto;
+    http {
+        access_log off;
+        upstream backend_servers {
+            server ${{ backends.slurm_cluster.nodes[0].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[1].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[2].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[3].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[4].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[5].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[6].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[7].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[8].ip_address }}:8180;
+            server ${{ backends.slurm_cluster.nodes[9].ip_address }}:8180;
+        }
+        server {
+            listen 8000;
+            location / {
+                proxy_pass http://backend_servers;
+                proxy_buffering off;
+                proxy_read_timeout 24h;
+                proxy_send_timeout 24h;
+            }
+        }
+    }
+    events {
+        worker_connections 65535;
+        multi_accept on;
+        use epoll;
+    }
 backends:
 - name: slurm_cluster
   type: slurm
@@ -253,6 +296,10 @@ operators:
   container_image: ${{ variables.AIPERF_IMAGE }}
   container_writable: true
   mpi: pmix
+- name: nginx
+  type: srun
+  container_image: ${{ variables.NGINX_IMAGE }}
+  container_writable: true
 workflow:
   name: ctx11_gen1_dep16_batch256_eplb256_mtp1
   timeout: 115m
@@ -355,10 +402,10 @@ workflow:
     depends_on:
     - load_image
     - install_aiperf
-  - name: frontend_server
-    operator: dynamo_trtllm
+  - name: nginx_server
+    operator: nginx
     script:
-    - python3 -m dynamo.frontend --http-port 8000 ${{ variables.EXTRA_FRONTEND_ARGS }}
+    - /usr/sbin/nginx -c ${{ artifacts.NGINX_CONFIG.path }} -g 'daemon off;'
     resources:
       nodes:
         indices:
@@ -367,11 +414,29 @@ workflow:
       readiness:
         tcp_port:
           port: 8000
+        timeout: 60
+        interval: 2
+    depends_on:
+    - frontend_server
+  - name: frontend_server
+    operator: dynamo_trtllm
+    script:
+    - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
+    resources:
+      nodes:
+        count: 1
+    probes:
+      readiness:
+        tcp_port:
+          port: ${{ variables.FRONTEND_PORT }}
         timeout: 120
         interval: 5
     depends_on:
     - nats_server
     - etcd_server
+    replicas:
+      count: ${{ variables.NUM_FRONTENDS }}
+      policy: parallel
   - name: prefill_server
     operator:
       name: dynamo_trtllm
@@ -465,4 +530,4 @@ workflow:
     depends_on:
     - prefill_server
     - decode_server
-    - frontend_server
+    - nginx_server

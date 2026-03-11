@@ -14,6 +14,7 @@ variables:
     value: 4
   SLURM_NODES:
     description: Number of nodes
+    type: integer
     value: 9
   SERVED_MODEL_NAME:
     description: Served model name
@@ -125,6 +126,12 @@ variables:
   DYNAMO_IMAGE:
     description: Dynamo TRTLLM container image
     value: dynamo-trtllm
+  NUM_FRONTENDS:
+    description: Number of frontend instances
+    value: 1
+  FRONTEND_PORT:
+    description: Frontend listening port
+    value: 8000
 artifacts:
 - name: LOCAL_MODEL_PATH
   uri: fs://${{ variables.MODEL_PATH }}
@@ -375,20 +382,22 @@ workflow:
   - name: frontend_server
     operator: dynamo_trtllm
     script:
-    - python3 -m dynamo.frontend --http-port 8000 ${{ variables.EXTRA_FRONTEND_ARGS }}
+    - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
     resources:
       nodes:
-        indices:
-        - 0
+        count: 1
     probes:
       readiness:
         tcp_port:
-          port: 8000
+          port: ${{ variables.FRONTEND_PORT }}
         timeout: 120
         interval: 5
     depends_on:
     - nats_server
     - etcd_server
+    replicas:
+      count: ${{ variables.NUM_FRONTENDS }}
+      policy: parallel
   - name: prefill_server
     operator:
       name: dynamo_trtllm

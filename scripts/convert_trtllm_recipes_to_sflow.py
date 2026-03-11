@@ -56,7 +56,73 @@ def _concurrency_domain(concurrencies) -> list[int]:
 
 def _yaml_to_literal_block(obj: dict) -> str:
     """Dump YAML dict to a string for artifact content (PyYAML will emit as block scalar)."""
-    return yaml.dump(obj, default_flow_style=False, allow_unicode=True, sort_keys=False).rstrip()
+    return yaml.dump(
+        obj, default_flow_style=False, allow_unicode=True, sort_keys=False
+    ).rstrip()
+
+
+# ---------------------------------------------------------------------------
+# Multi-frontend helpers (shared with sglang converter)
+# ---------------------------------------------------------------------------
+
+
+def _get_frontend_config(data: dict, slurm_nodes: int) -> tuple[bool, int, str]:
+    """Extract multi-frontend settings from recipe.
+
+    Matches srt-slurm FrontendConfig defaults (enable_multiple_frontends=True)
+    and topology rules: single-node disables multi-frontend regardless of config.
+    """
+    fe = data.get("frontend", {})
+    enable = fe.get("enable_multiple_frontends", True)
+    num_additional = int(fe.get("num_additional_frontends", 9))
+    nginx_container = (
+        fe.get("nginx_container", "nginx:1.27.4")
+        if fe.get("nginx_container", "nginx:1.27.4") != "nginx-sqsh"
+        else "nginx:1.27.4"
+    )
+
+    if slurm_nodes <= 1:
+        enable = False
+
+    return enable, num_additional + 1, nginx_container
+
+
+def _generate_nginx_config(
+    num_frontends: int, slurm_nodes: int, frontend_port: int = 8180
+) -> str:
+    """Generate nginx config content with sflow node IP expressions."""
+    actual_count = min(num_frontends, slurm_nodes - 1)
+    lines = [
+        "worker_processes auto;",
+        "http {",
+        "    access_log off;",
+        "    upstream backend_servers {",
+    ]
+    for i in range(0, actual_count):
+        lines.append(
+            f"        server ${{{{ backends.slurm_cluster.nodes[{i}].ip_address }}}}:{frontend_port};"
+        )
+    lines.extend(
+        [
+            "    }",
+            "    server {",
+            "        listen 8000;",
+            "        location / {",
+            "            proxy_pass http://backend_servers;",
+            "            proxy_buffering off;",
+            "            proxy_read_timeout 24h;",
+            "            proxy_send_timeout 24h;",
+            "        }",
+            "    }",
+            "}",
+            "events {",
+            "    worker_connections 65535;",
+            "    multi_accept on;",
+            "    use epoll;",
+            "}",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def convert_recipe(recipe_path: Path, data: dict) -> dict:
@@ -84,7 +150,6 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
     ctx_tp = int(prefill_cfg.get("tensor_parallel_size", 1))
     gen_tp = int(decode_cfg.get("tensor_parallel_size", 1))
 
-    # Total nodes: worker nodes + 1 head (frontend/etcd/nats); optional +1 for dedicated infra
     extra_node = 1 if infra.get("etcd_nats_dedicated_node") else 0
     slurm_nodes = prefill_nodes + decode_nodes + 1 + extra_node
 
@@ -105,13 +170,20 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         else "gitlab-master.nvidia.com/perflab-compute/unified-benchmarks/aiperf:0.3.0-x86"
     )
 
-    # Build variables section (same shape as sample)
+    enable_multi, num_frontends, nginx_container = _get_frontend_config(
+        data, slurm_nodes
+    )
+
     variables = {
         "SLURM_ACCOUNT": {"description": "SLURM account", "value": "rogliu"},
         "SLURM_PARTITION": {"description": "SLURM partition", "value": "gamoraq"},
         "SLURM_TIMELIMIT": {"description": "SLURM time limit", "value": 120},
         "GPUS_PER_NODE": {"description": "GPUs per node", "value": gpus_per_node},
-        "SLURM_NODES": {"description": "Number of nodes", "value": slurm_nodes},
+        "SLURM_NODES": {
+            "description": "Number of nodes",
+            "type": "integer",
+            "value": slurm_nodes,
+        },
         "SERVED_MODEL_NAME": {
             "description": "Served model name",
             "value": served_model_name,
@@ -150,7 +222,11 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         },
         "CTX_FREE_GPU_MEMORY_FRACTION": {
             "description": "Context free GPU memory fraction",
-            "value": float(prefill_cfg.get("kv_cache_config", {}).get("free_gpu_memory_fraction", 0.9)),
+            "value": float(
+                prefill_cfg.get("kv_cache_config", {}).get(
+                    "free_gpu_memory_fraction", 0.9
+                )
+            ),
         },
         "CTX_ENABLE_ATTENTION_DP": {
             "description": "Context enable attention DP",
@@ -196,7 +272,11 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         },
         "GEN_FREE_GPU_MEMORY_FRACTION": {
             "description": "Generation free GPU memory fraction",
-            "value": float(decode_cfg.get("kv_cache_config", {}).get("free_gpu_memory_fraction", 0.9)),
+            "value": float(
+                decode_cfg.get("kv_cache_config", {}).get(
+                    "free_gpu_memory_fraction", 0.9
+                )
+            ),
         },
         "GEN_ENABLE_ATTENTION_DP": {
             "description": "Generation enable attention DP",
@@ -223,12 +303,37 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         },
     }
 
-    # Artifacts: LOCAL_MODEL_PATH, PREFILL_CONFIG, DECODE_CONFIG (literal from recipe to preserve all options)
+    # Multi-frontend variables
+    if enable_multi:
+        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        variables["NUM_FRONTENDS"] = {
+            "description": "Number of frontend instances",
+            "value": actual_frontends,
+        }
+        variables["FRONTEND_PORT"] = {
+            "description": "Frontend listening port (8180 behind nginx, 8000 direct)",
+            "value": 8180,
+        }
+        variables["NGINX_IMAGE"] = {
+            "description": "Nginx container image",
+            "value": nginx_container,
+        }
+    else:
+        variables["NUM_FRONTENDS"] = {
+            "description": "Number of frontend instances",
+            "value": 1,
+        }
+        variables["FRONTEND_PORT"] = {
+            "description": "Frontend listening port",
+            "value": 8000,
+        }
+
+    # Artifacts
     if "/" in model_path and not model_path.startswith(("fs://", "file://")):
         model_uri = f"fs://{model_path}"
     else:
         model_uri = "fs://${{ variables.MODEL_PATH }}"
-    artifacts = [
+    artifacts: list[dict] = [
         {"name": "LOCAL_MODEL_PATH", "uri": model_uri},
         {
             "name": "PREFILL_CONFIG",
@@ -242,11 +347,15 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         },
     ]
 
-    # Build prefill_server script: only export envs from recipe prefill_environment
-    prefill_script = [
-        "set -x",
-        "echo ${CUDA_VISIBLE_DEVICES}",
-    ]
+    if enable_multi:
+        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        nginx_cfg = _generate_nginx_config(actual_frontends, slurm_nodes, 8180)
+        artifacts.append(
+            {"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg}
+        )
+
+    # Build prefill/decode scripts
+    prefill_script = ["set -x", "echo ${CUDA_VISIBLE_DEVICES}"]
     for k, v in prefill_env.items():
         prefill_script.append(f'export {k}="{v}"')
     prefill_script.append(
@@ -257,11 +366,7 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         "--extra-engine-args ${{ artifacts.PREFILL_CONFIG.path }} ${EXTRA_PREFILL_ARGS}",
     )
 
-    # Build decode_server script: only export envs from recipe decode_environment
-    decode_script = [
-        "set -x",
-        "echo ${CUDA_VISIBLE_DEVICES}",
-    ]
+    decode_script = ["set -x", "echo ${CUDA_VISIBLE_DEVICES}"]
     for k, v in decode_env.items():
         decode_script.append(f'export {k}="{v}"')
     decode_script.append(
@@ -272,17 +377,29 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         "--extra-engine-args ${{ artifacts.DECODE_CONFIG.path }} ${EXTRA_DECODE_ARGS}",
     )
 
-    # Load full workflow template from sample and substitute
+    # Load template
     sample_path = Path(__file__).resolve().parent.parent / "sflow_trtllm_disagg.yaml"
     with open(sample_path, encoding="utf-8") as f:
         template = yaml.safe_load(f)
+
+    # Build operators with optional nginx
+    operators = list(template["operators"])
+    if enable_multi:
+        operators.append(
+            {
+                "name": "nginx",
+                "type": "srun",
+                "container_image": "${{ variables.NGINX_IMAGE }}",
+                "container_writable": True,
+            }
+        )
 
     out = {
         "version": "0.1",
         "variables": variables,
         "artifacts": artifacts,
         "backends": template["backends"],
-        "operators": template["operators"],
+        "operators": operators,
         "workflow": {
             "name": name.replace(" ", "_").replace('"', ""),
             "timeout": "115m",
@@ -291,14 +408,70 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
         },
     }
 
-    # Copy tasks from template; substitute prefill/decode script and env
+    # Build tasks from template with multi-frontend modifications
+    nginx_bin = (
+        "/usr/sbin/nginx" if gpu_type.startswith(("gb200", "gb300")) else "nginx"
+    )
+
     for task in template["workflow"]["tasks"]:
         t = dict(task)
-        if t["name"] == "prefill_server":
+
+        if t["name"] == "frontend_server":
+            t["replicas"] = {
+                "count": "${{ variables.NUM_FRONTENDS }}",
+                "policy": "parallel",
+            }
+            t["script"] = [
+                "python3 -m dynamo.frontend"
+                " --http-port ${{ variables.FRONTEND_PORT }}"
+                " ${{ variables.EXTRA_FRONTEND_ARGS }}"
+            ]
+            t["resources"] = {"nodes": {"count": 1}}
+            t["probes"] = {
+                "readiness": {
+                    "tcp_port": {"port": "${{ variables.FRONTEND_PORT }}"},
+                    "timeout": 120,
+                    "interval": 5,
+                }
+            }
+            if enable_multi:
+                # Insert nginx_server task before frontend
+                out["workflow"]["tasks"].append(
+                    {
+                        "name": "nginx_server",
+                        "operator": "nginx",
+                        "script": [
+                            f"{nginx_bin} -c ${{{{ artifacts.NGINX_CONFIG.path }}}} -g 'daemon off;'"
+                        ],
+                        "resources": {"nodes": {"indices": [0]}},
+                        "probes": {
+                            "readiness": {
+                                "tcp_port": {"port": 8000},
+                                "timeout": 60,
+                                "interval": 2,
+                            }
+                        },
+                        "depends_on": ["frontend_server"],
+                    }
+                )
+            out["workflow"]["tasks"].append(t)
+        elif t["name"] == "prefill_server":
             t["script"] = prefill_script
+            out["workflow"]["tasks"].append(t)
         elif t["name"] == "decode_server":
             t["script"] = decode_script
-        out["workflow"]["tasks"].append(t)
+            out["workflow"]["tasks"].append(t)
+        elif t["name"] == "benchmark":
+            if enable_multi:
+                deps = list(t.get("depends_on", []))
+                if "frontend_server" in deps:
+                    deps.remove("frontend_server")
+                if "nginx_server" not in deps:
+                    deps.append("nginx_server")
+                t["depends_on"] = deps
+            out["workflow"]["tasks"].append(t)
+        else:
+            out["workflow"]["tasks"].append(t)
 
     return out
 
@@ -315,6 +488,7 @@ def main() -> int:
         print(f"No YAML files under {recipes_dir}", file=sys.stderr)
         return 1
 
+    converted = 0
     for path in sorted(yaml_files):
         try:
             with open(path, encoding="utf-8") as f:
@@ -346,8 +520,9 @@ def main() -> int:
                 sort_keys=False,
                 width=120,
             )
-        # print(f"Converted: {path} -> {out_path}")
+        converted += 1
 
+    print(f"Converted {converted} TRTLLM recipes", file=sys.stderr)
     return 0
 
 

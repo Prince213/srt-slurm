@@ -86,7 +86,7 @@ def _generate_nginx_config(
     num_frontends: int, slurm_nodes: int, frontend_port: int = 8180
 ) -> str:
     """Generate nginx config content with sflow node IP expressions."""
-    actual_count = min(num_frontends, slurm_nodes - 1)
+    actual_count = min(num_frontends, slurm_nodes)
     lines = [
         "worker_processes auto;",
         "http {",
@@ -234,8 +234,8 @@ def _get_frontend_config(data: dict, slurm_nodes: int) -> tuple[bool, int, str]:
         (enable_multi, num_frontends, nginx_container)
     """
     fe = data.get("frontend", {})
-    enable = fe.get("enable_multiple_frontends", True)
-    num_additional = int(fe.get("num_additional_frontends", 9))
+    enable = fe.get("enable_multiple_frontends", False)
+    num_additional = int(fe.get("num_additional_frontends", 0))
     nginx_container = fe.get("nginx_container", "nginx:1.27.4")
 
     # Match srt-slurm topology rule: single node → no multi-frontend
@@ -701,7 +701,7 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
     gen_dp_attn = _has_dp_attention(decode_cfg)
 
     extra_node = 1 if infra.get("etcd_nats_dedicated_node") else 0
-    slurm_nodes = prefill_nodes + decode_nodes + 1 + extra_node
+    slurm_nodes = prefill_nodes + decode_nodes + extra_node
 
     model_path = model.get("path", "model")
     container = _sglang_container(model)
@@ -810,7 +810,7 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
     )
 
     if enable_multi:
-        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        actual_frontends = min(num_frontends, slurm_nodes)
         variables["NUM_FRONTENDS"] = {
             "description": "Number of frontend instances",
             "value": actual_frontends,
@@ -840,7 +840,7 @@ def convert_sglang_disagg_recipe(recipe_path: Path, data: dict) -> dict:
     artifacts: list[dict] = [{"name": "LOCAL_MODEL_PATH", "uri": model_uri}]
 
     if enable_multi:
-        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        actual_frontends = min(num_frontends, slurm_nodes)
         nginx_cfg = _generate_nginx_config(actual_frontends, slurm_nodes, 8180)
         artifacts.append(
             {"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg}
@@ -987,7 +987,7 @@ def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
     )
 
     if enable_multi:
-        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        actual_frontends = min(num_frontends, slurm_nodes)
         variables["NUM_FRONTENDS"] = {
             "description": "Number of frontend instances",
             "value": actual_frontends,
@@ -1017,7 +1017,7 @@ def convert_sglang_agg_recipe(recipe_path: Path, data: dict) -> dict:
     artifacts: list[dict] = [{"name": "LOCAL_MODEL_PATH", "uri": model_uri}]
 
     if enable_multi:
-        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        actual_frontends = min(num_frontends, slurm_nodes)
         nginx_cfg = _generate_nginx_config(actual_frontends, slurm_nodes, 8180)
         artifacts.append(
             {"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg}

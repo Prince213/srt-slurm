@@ -73,8 +73,8 @@ def _get_frontend_config(data: dict, slurm_nodes: int) -> tuple[bool, int, str]:
     and topology rules: single-node disables multi-frontend regardless of config.
     """
     fe = data.get("frontend", {})
-    enable = fe.get("enable_multiple_frontends", True)
-    num_additional = int(fe.get("num_additional_frontends", 9))
+    enable = fe.get("enable_multiple_frontends", False)
+    num_additional = int(fe.get("num_additional_frontends", 0))
     nginx_container = (
         fe.get("nginx_container", "nginx:1.27.4")
         if fe.get("nginx_container", "nginx:1.27.4") != "nginx-sqsh"
@@ -87,11 +87,28 @@ def _get_frontend_config(data: dict, slurm_nodes: int) -> tuple[bool, int, str]:
     return enable, num_additional + 1, nginx_container
 
 
+def _get_frontend_extra_args(data: dict) -> str:
+    """Extract extra frontend CLI args from recipe frontend.args dict."""
+    fe = data.get("frontend", {})
+    args_dict = fe.get("args", {})
+    if not args_dict:
+        return ""
+    parts: list[str] = []
+    for key, value in args_dict.items():
+        flag = f"--{key}" if key.startswith("-") else f"--{key.replace('_', '-')}"
+        if isinstance(value, bool):
+            if value:
+                parts.append(flag)
+        elif value is not None:
+            parts.extend([flag, str(value)])
+    return " ".join(parts)
+
+
 def _generate_nginx_config(
     num_frontends: int, slurm_nodes: int, frontend_port: int = 8180
 ) -> str:
     """Generate nginx config content with sflow node IP expressions."""
-    actual_count = min(num_frontends, slurm_nodes - 1)
+    actual_count = min(num_frontends, slurm_nodes)
     lines = [
         "worker_processes auto;",
         "http {",
@@ -151,7 +168,7 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
     gen_tp = int(decode_cfg.get("tensor_parallel_size", 1))
 
     extra_node = 1 if infra.get("etcd_nats_dedicated_node") else 0
-    slurm_nodes = prefill_nodes + decode_nodes + 1 + extra_node
+    slurm_nodes = prefill_nodes + decode_nodes + extra_node
 
     model_path = model.get("path", "model")
     served_model_name = model_path.replace("/", "-")
@@ -173,6 +190,7 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
     enable_multi, num_frontends, nginx_container = _get_frontend_config(
         data, slurm_nodes
     )
+    frontend_extra = _get_frontend_extra_args(data)
 
     variables = {
         "SLURM_ACCOUNT": {"description": "SLURM account", "value": "rogliu"},
@@ -282,7 +300,10 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
             "description": "Generation enable attention DP",
             "value": decode_cfg.get("enable_attention_dp", False),
         },
-        "EXTRA_FRONTEND_ARGS": {"description": "Extra frontend arguments", "value": ""},
+        "EXTRA_FRONTEND_ARGS": {
+            "description": "Extra frontend arguments",
+            "value": frontend_extra if frontend_extra else "",
+        },
         "EXTRA_PREFILL_ARGS": {"description": "Extra prefill arguments", "value": ""},
         "EXTRA_DECODE_ARGS": {"description": "Extra decode arguments", "value": ""},
         "ISL": {"description": "Input sequence length", "value": isl},
@@ -305,7 +326,7 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
 
     # Multi-frontend variables
     if enable_multi:
-        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        actual_frontends = min(num_frontends, slurm_nodes)
         variables["NUM_FRONTENDS"] = {
             "description": "Number of frontend instances",
             "value": actual_frontends,
@@ -348,7 +369,7 @@ def convert_recipe(recipe_path: Path, data: dict) -> dict:
     ]
 
     if enable_multi:
-        actual_frontends = min(num_frontends, slurm_nodes - 1)
+        actual_frontends = min(num_frontends, slurm_nodes)
         nginx_cfg = _generate_nginx_config(actual_frontends, slurm_nodes, 8180)
         artifacts.append(
             {"name": "NGINX_CONFIG", "uri": "file://nginx.conf", "content": nginx_cfg}

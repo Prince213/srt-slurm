@@ -15,7 +15,7 @@ variables:
   SLURM_NODES:
     description: Number of nodes
     type: integer
-    value: 5
+    value: 4
   SERVED_MODEL_NAME:
     description: Served model name
     value: Qwen/Qwen3-32B

@@ -1,0 +1,370 @@
+version: '0.1'
+variables:
+  SLURM_ACCOUNT:
+    description: SLURM account
+    value: rogliu
+  SLURM_PARTITION:
+    description: SLURM partition
+    value: gamoraq
+  SLURM_TIMELIMIT:
+    description: SLURM time limit
+    value: 120
+  GPUS_PER_NODE:
+    description: GPUs per node
+    value: 4
+  SLURM_NODES:
+    description: Number of nodes
+    value: 15
+  SERVED_MODEL_NAME:
+    description: Served model name
+    value: deepseek-ai/DeepSeek-R1
+  MODEL_PATH:
+    description: Model path (fs or name)
+    value: dsr1-fp8
+  EXTRA_FRONTEND_ARGS:
+    description: Extra frontend arguments
+    value: ''
+  ISL:
+    description: Input sequence length
+    value: 1024
+  OSL:
+    description: Output sequence length
+    value: 8192
+  MULTI_ROUND:
+    description: Number of benchmark rounds
+    value: 8
+  CONCURRENCY:
+    description: Concurrency
+    value: 256
+    domain:
+    - 256
+    - 512
+    - 1024
+    - 2048
+    - 4096
+    - 8192
+  AIPERF_IMAGE:
+    description: AIPerf container image
+    value: gitlab-master.nvidia.com/perflab-compute/unified-benchmarks/aiperf:0.3.0-arm
+  NUM_CTX_SERVERS:
+    description: Number of context/prefill servers
+    value: 1
+  CTX_TP_SIZE:
+    description: Context tensor parallel size
+    value: 8
+  NUM_GEN_SERVERS:
+    description: Number of generation/decode servers
+    value: 1
+  GEN_TP_SIZE:
+    description: Generation tensor parallel size
+    value: 48
+  EXTRA_PREFILL_ARGS:
+    description: Extra prefill arguments
+    value: ''
+  EXTRA_DECODE_ARGS:
+    description: Extra decode arguments
+    value: ''
+  SGLANG_IMAGE:
+    description: SGLang container image
+    value: dynamo-sglang
+  NUM_FRONTENDS:
+    description: Number of frontend instances
+    value: 1
+  FRONTEND_PORT:
+    description: Frontend listening port
+    value: 8000
+artifacts:
+- name: LOCAL_MODEL_PATH
+  uri: fs://${{ variables.MODEL_PATH }}
+backends:
+- name: slurm_cluster
+  type: slurm
+  default: true
+  time: ${{ variables.SLURM_TIMELIMIT }}
+  nodes: ${{ variables.SLURM_NODES }}
+  partition: ${{ variables.SLURM_PARTITION }}
+  account: ${{ variables.SLURM_ACCOUNT }}
+  gpus_per_node: ${{ variables.GPUS_PER_NODE }}
+operators:
+- name: dynamo_sglang
+  type: srun
+  container_image: ${{ variables.SGLANG_IMAGE }}
+  container_writable: true
+  mpi: pmix
+- name: nginx
+  type: srun
+  container_image: ${{ variables.NGINX_IMAGE }}
+  container_writable: true
+- name: aiperf
+  type: srun
+  container_image: ${{ variables.AIPERF_IMAGE }}
+  container_writable: true
+  mpi: pmix
+workflow:
+  name: gb300-1k8k-fp8-mid
+  timeout: 115m
+  variables:
+    HEAD_NODE_IP:
+      description: Head node IP (resolved after allocation)
+      value: ${{ backends.slurm_cluster.nodes[0].ip_address }}
+    ETCD_ENDPOINTS:
+      description: ETCD endpoints
+      value: ${{ backends.slurm_cluster.nodes[0].ip_address }}:2379
+    NATS_SERVER:
+      description: NATS server URL
+      value: nats://${{ backends.slurm_cluster.nodes[0].ip_address }}:4222
+  tasks:
+  - name: load_image
+    operator:
+      name: dynamo_sglang
+      ntasks: ${{ variables.SLURM_NODES }}
+      ntasks_per_node: 1
+    script:
+    - echo "Image Loaded"
+    - sleep 3600
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: Image Loaded
+          match_count: ${{ variables.SLURM_NODES }}
+        timeout: 1200
+        interval: 2
+  - name: install_aiperf
+    operator:
+      name: aiperf
+      ntasks_per_node: 1
+    resources:
+      nodes:
+        indices:
+        - 0
+    script:
+    - pip install aiperf==0.3.0
+    - echo "AIPerf installed"
+    - sleep 3600
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: AIPerf installed
+        timeout: 1200
+        interval: 2
+  - name: gpu_monitor
+    operator:
+      name: dynamo_sglang
+      ntasks_per_node: 1
+    resources:
+      nodes:
+        count: ${{ variables.SLURM_NODES }}
+    script:
+    - echo "Starting gpu monitor"
+    - 'nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,power.draw,clocks.sm,clocks.mem,memory.total,memory.used
+      --format=csv,noheader,nounits -lms 2000 | while IFS= read -r input || [ -n "$input" ] ; do timestamp=$(date +%s%3N);
+      printf "%s.%s,%s\n" "${timestamp:0:10}" "${timestamp:10:3}" "${input}"; done >> ${SFLOW_TASK_OUTPUT_DIR}/gpu_monitor_node_${SLURM_NODEID}_${SLURMD_NODENAME}.log
+
+      '
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: Starting gpu monitor
+        timeout: 60
+        interval: 2
+    depends_on:
+    - load_image
+    - install_aiperf
+  - name: nats_server
+    operator: dynamo_sglang
+    script:
+    - nats-server -js
+    resources:
+      nodes:
+        indices:
+        - 0
+    probes:
+      readiness:
+        tcp_port:
+          port: 4222
+        timeout: 60
+        interval: 2
+    depends_on:
+    - load_image
+    - install_aiperf
+  - name: etcd_server
+    operator: dynamo_sglang
+    script:
+    - 'etcd --listen-client-urls "http://0.0.0.0:2379" --advertise-client-urls "http://0.0.0.0:2379" --listen-peer-urls "http://0.0.0.0:2380"
+      --initial-advertise-peer-urls "http://${HEAD_NODE_IP}:2380" --initial-cluster "default=http://${HEAD_NODE_IP}:2380"
+      --data-dir /tmp/etcd
+
+      '
+    resources:
+      nodes:
+        indices:
+        - 0
+    probes:
+      readiness:
+        tcp_port:
+          port: 2379
+        timeout: 60
+        interval: 2
+    depends_on:
+    - load_image
+    - install_aiperf
+  - name: frontend_server
+    operator: dynamo_sglang
+    replicas:
+      count: ${{ variables.NUM_FRONTENDS }}
+      policy: parallel
+    script:
+    - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
+    resources:
+      nodes:
+        indices:
+        - 0
+    probes:
+      readiness:
+        tcp_port:
+          port: ${{ variables.FRONTEND_PORT }}
+        timeout: 120
+        interval: 5
+    depends_on:
+    - nats_server
+    - etcd_server
+  - name: prefill_server
+    operator:
+      name: dynamo_sglang
+      ntasks: ${{ variables.CTX_TP_SIZE }}
+      ntasks_per_node: ${{ [ variables.CTX_TP_SIZE, variables.GPUS_PER_NODE ] | min }}
+    replicas:
+      count: ${{ variables.NUM_CTX_SERVERS }}
+      policy: parallel
+    script:
+    - set -x
+    - echo ${CUDA_VISIBLE_DEVICES}
+    - export TORCH_DISTRIBUTED_DEFAULT_TIMEOUT="1800"
+    - export SGLANG_DG_CACHE_DIR="/configs/dg-10212025"
+    - export DYN_SKIP_SGLANG_LOG_FORMATTING="1"
+    - export MC_TE_METRIC="true"
+    - export SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE="100000"
+    - export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT="100000"
+    - export SGLANG_DISAGGREGATION_WAITING_TIMEOUT="100000"
+    - export SGLANG_MOONCAKE_CUSTOM_MEM_POOL="True"
+    - export MC_FORCE_MNNVL="1"
+    - export NCCL_MNNVL_ENABLE="1"
+    - export NCCL_CUMEM_ENABLE="1"
+    - export SGLANG_USE_MESSAGE_QUEUE_BROADCASTER="0"
+    - export SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK="1"
+    - export PYTHONUNBUFFERED="1"
+    - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
+      --disaggregation-mode prefill --skip-tokenizer-init --trust-remote-code --tp-size 8 --dp-size 8 --ep-size 8 --enable-dp-attention
+      --attention-backend trtllm_mla --kv-cache-dtype fp8_e4m3 --disable-radix-cache --stream-interval 50 --max-running-requests
+      30000 --context-length 9300 --watchdog-timeout 1000000 --disable-shared-experts-fusion --eplb-algorithm deepseek --disaggregation-bootstrap-port
+      30001 --disaggregation-transfer-backend nixl --mem-fraction-static 0.75 --max-total-tokens 524288 --chunked-prefill-size
+      131072 --load-balance-method round_robin --disable-cuda-graph --moe-a2a-backend deepep --deepep-mode normal --ep-dispatch-algorithm
+      dynamic --moe-dense-tp-size 1 --enable-dp-lm-head --ep-num-redundant-experts 32 --deepep-config /configs/deepep_config.json
+      ${EXTRA_PREFILL_ARGS}
+    resources:
+      gpus:
+        count: ${{ variables.CTX_TP_SIZE }}
+    depends_on:
+    - frontend_server
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: The server is fired up
+        timeout: 900
+        interval: 10
+      failure:
+        log_watch:
+          regex_pattern: Traceback (most recent call last)
+        interval: 10
+    retries:
+      count: 3
+      interval: 30
+      backoff: 2
+  - name: decode_server
+    operator:
+      name: dynamo_sglang
+      ntasks: ${{ variables.GEN_TP_SIZE }}
+      ntasks_per_node: ${{ [ variables.GEN_TP_SIZE, variables.GPUS_PER_NODE ] | min }}
+    replicas:
+      count: ${{ variables.NUM_GEN_SERVERS }}
+      policy: parallel
+    script:
+    - set -x
+    - echo ${CUDA_VISIBLE_DEVICES}
+    - export TORCH_DISTRIBUTED_DEFAULT_TIMEOUT="1800"
+    - export SGLANG_DG_CACHE_DIR="/configs/dg-10212025"
+    - export DYN_SKIP_SGLANG_LOG_FORMATTING="1"
+    - export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK="1024"
+    - export MC_TE_METRIC="true"
+    - export SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE="100000"
+    - export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT="100000"
+    - export SGLANG_DISAGGREGATION_WAITING_TIMEOUT="100000"
+    - export SGLANG_DECODE_BOOTSTRAP_TIMEOUT="1000"
+    - export SGLANG_HACK_SEQ_BOOTSTRAP_ROOM="1"
+    - export SGLANG_MOONCAKE_CUSTOM_MEM_POOL="True"
+    - export MC_FORCE_MNNVL="1"
+    - export NCCL_MNNVL_ENABLE="1"
+    - export NCCL_CUMEM_ENABLE="1"
+    - export SGLANG_USE_MESSAGE_QUEUE_BROADCASTER="0"
+    - export SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK="1"
+    - export PYTHONUNBUFFERED="1"
+    - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
+      --disaggregation-mode decode --skip-tokenizer-init --trust-remote-code --disaggregation-transfer-backend nixl --tp-size
+      48 --dp-size 48 --ep-size 48 --enable-dp-attention --attention-backend trtllm_mla --kv-cache-dtype fp8_e4m3 --disable-radix-cache
+      --stream-interval 50 --decode-log-interval 1000 --max-running-requests 45000 --context-length 9300 --watchdog-timeout
+      1000000 --disable-shared-experts-fusion --eplb-algorithm deepseek --disaggregation-bootstrap-port 30001 --mem-fraction-static
+      0.82 --chunked-prefill-size 36864 --moe-a2a-backend deepep --deepep-mode low_latency --ep-dispatch-algorithm static
+      --moe-dense-tp-size 1 --enable-dp-lm-head --prefill-round-robin-balance --ep-num-redundant-experts 32 --deepep-config
+      /configs/deepep_config.json --cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160
+      168 176 184 192 200 208 216 224 232 240 248 256 264 272 280 288 296 304 312 320 328 336 344 352 360 368 376 384 416
+      448 480 512 544 576 608 640 672 704 736 768 1024 --cuda-graph-max-bs 1024 ${EXTRA_DECODE_ARGS}
+    resources:
+      gpus:
+        count: ${{ variables.GEN_TP_SIZE }}
+    depends_on:
+    - frontend_server
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: The server is fired up
+        timeout: 900
+        interval: 10
+      failure:
+        log_watch:
+          regex_pattern: Traceback (most recent call last)
+        interval: 10
+    retries:
+      count: 3
+      interval: 30
+      backoff: 2
+  - name: benchmark
+    operator:
+      name: aiperf
+      ntasks: 1
+    script:
+    - set -x
+    - export COLUMNS=200
+    - 'aiperf profile --artifact-dir ${SFLOW_WORKFLOW_OUTPUT_DIR}/aiperf_concurrency_${CONCURRENCY} --model ${{ variables.SERVED_MODEL_NAME
+      }} --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} --endpoint-type chat --endpoint /v1/chat/completions --streaming
+      --url http://${{ variables.HEAD_NODE_IP }}:8000 --synthetic-input-tokens-mean ${{ variables.ISL }} --synthetic-input-tokens-stddev
+      0 --output-tokens-mean ${{ variables.OSL }} --output-tokens-stddev 0 --extra-inputs "max_tokens:${{ variables.OSL }}"
+      --extra-inputs "min_tokens:${{ variables.OSL }}" --extra-inputs "ignore_eos:true" --extra-inputs "{\"nvext\":{\"ignore_eos\":true}}"
+      --extra-inputs "repetition_penalty:1.0" --extra-inputs "temperature: 0.0" --concurrency ${CONCURRENCY} --request-count
+      $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) --warmup-request-count ${CONCURRENCY} --num-dataset-entries $((${{
+      variables.MULTI_ROUND }}*${CONCURRENCY})) --random-seed 100 -H ''Authorization: Bearer NOT USED'' -H ''Accept: text/event-stream''
+      --record-processors 8 --ui simple
+
+      '
+    - echo "Benchmarking finished"
+    resources:
+      nodes:
+        indices:
+        - 0
+    replicas:
+      variables:
+      - CONCURRENCY
+      policy: sequential
+    depends_on:
+    - prefill_server
+    - decode_server
+    - frontend_server

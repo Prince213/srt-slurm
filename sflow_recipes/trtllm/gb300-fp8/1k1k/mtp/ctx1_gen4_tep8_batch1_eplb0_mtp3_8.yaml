@@ -21,6 +21,26 @@ variables:
   MODEL_PATH:
     description: Model path (fs or name)
     value: dsr1-fp8
+  EXTRA_FRONTEND_ARGS:
+    description: Extra frontend arguments
+    value: ''
+  ISL:
+    description: Input sequence length
+    value: 1024
+  OSL:
+    description: Output sequence length
+    value: 1024
+  MULTI_ROUND:
+    description: Number of benchmark rounds
+    value: 8
+  CONCURRENCY:
+    description: Concurrency
+    value: 8
+    domain:
+    - 8
+  AIPERF_IMAGE:
+    description: AIPerf container image
+    value: gitlab-master.nvidia.com/perflab-compute/unified-benchmarks/aiperf:0.3.0-arm
   NUM_CTX_SERVERS:
     description: Number of context/prefill servers
     value: 1
@@ -96,32 +116,12 @@ variables:
   GEN_ENABLE_ATTENTION_DP:
     description: Generation enable attention DP
     value: false
-  EXTRA_FRONTEND_ARGS:
-    description: Extra frontend arguments
-    value: ''
   EXTRA_PREFILL_ARGS:
     description: Extra prefill arguments
     value: ''
   EXTRA_DECODE_ARGS:
     description: Extra decode arguments
     value: ''
-  ISL:
-    description: Input sequence length
-    value: 1024
-  OSL:
-    description: Output sequence length
-    value: 1024
-  MULTI_ROUND:
-    description: Number of benchmark rounds
-    value: 8
-  CONCURRENCY:
-    description: Concurrency
-    value: 8
-    domain:
-    - 8
-  AIPERF_IMAGE:
-    description: AIPerf container image
-    value: gitlab-master.nvidia.com/perflab-compute/unified-benchmarks/aiperf:0.3.0-arm
   DYNAMO_IMAGE:
     description: Dynamo TRTLLM container image
     value: dynamo-trtllm

@@ -288,7 +288,7 @@ workflow:
       # Check if dynamo.sglang module exists, if not install required packages
       if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
         echo "dynamo.sglang not found, installing ai-dynamo packages..."
-        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1
+        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.0 ai-dynamo==0.8.0
       fi
     - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
     resources:
@@ -349,7 +349,7 @@ workflow:
       # Check if dynamo.sglang module exists, if not install required packages
       if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
         echo "dynamo.sglang not found, installing ai-dynamo packages..."
-        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1
+        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.0 ai-dynamo==0.8.0
       fi
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode prefill --trust-remote-code --quantization fp8 --disaggregation-transfer-backend nixl --mem-fraction-static
@@ -420,7 +420,7 @@ workflow:
       # Check if dynamo.sglang module exists, if not install required packages
       if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
         echo "dynamo.sglang not found, installing ai-dynamo packages..."
-        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.1 ai-dynamo==0.8.1
+        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.0 ai-dynamo==0.8.0
       fi
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode decode --trust-remote-code --quantization fp8 --disaggregation-transfer-backend nixl --mem-fraction-static

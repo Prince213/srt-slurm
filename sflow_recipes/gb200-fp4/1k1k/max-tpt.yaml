@@ -337,12 +337,14 @@ workflow:
       count: ${{ variables.NUM_FRONTENDS }}
       policy: parallel
     script:
+    - set -x
     - |
       # Check if dynamo.sglang module exists, if not install required packages
       if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
         echo "dynamo.sglang not found, installing ai-dynamo packages..."
         pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.0 ai-dynamo==0.8.0
       fi
+    - export DYN_REQUEST_PLANE="nats"
     - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
     resources:
       nodes:

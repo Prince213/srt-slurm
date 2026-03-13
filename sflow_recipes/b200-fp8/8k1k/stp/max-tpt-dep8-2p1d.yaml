@@ -154,7 +154,9 @@ workflow:
         indices:
         - 0
     script:
-    - pip install aiperf==0.3.0
+    - wget -q --show-progress --tries=3 --waitretry=5 "https://github.com/SemiAnalysisAI/InferenceX/archive/89ce6098ef2bc4576a735c43f39c7d972b091cfc.zip" -O InferenceX.zip
+    - unzip InferenceX.zip
+    - mv InferenceX-89ce6098ef2bc4576a735c43f39c7d972b091cfc InferenceX
     - echo "AIPerf installed"
     - sleep 3600
     probes:
@@ -448,7 +450,26 @@ workflow:
     - set -x
     - export COLUMNS=200
     - |
-      aiperf profile --artifact-dir ${SFLOW_WORKFLOW_OUTPUT_DIR}/aiperf_concurrency_${CONCURRENCY} --model ${{ variables.SERVED_MODEL_NAME }} --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} --endpoint-type chat --endpoint /v1/chat/completions --streaming --url http://${{ variables.HEAD_NODE_IP }}:8000 --synthetic-input-tokens-mean ${{ variables.ISL }} --synthetic-input-tokens-stddev 0 --output-tokens-mean ${{ variables.OSL }} --output-tokens-stddev 0 --extra-inputs "max_tokens:${{ variables.OSL }}" --extra-inputs "min_tokens:${{ variables.OSL }}" --extra-inputs "ignore_eos:true" --extra-inputs "{\"nvext\":{\"ignore_eos\":true}}" --extra-inputs "repetition_penalty:1.0" --extra-inputs "temperature: 0.0" --concurrency ${CONCURRENCY} --request-count $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) --warmup-request-count ${CONCURRENCY} --num-dataset-entries $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) --random-seed 100 -H 'Authorization: Bearer NOT USED' -H 'Accept: text/event-stream' --record-processors 8 --ui simple
+      python3 InferenceX/utils/bench_serving/benchmark_serving.py \
+        --model ${{ variables.SERVED_MODEL_NAME }} \
+        --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} \
+        --backend openai-chat \
+        --base-url http://${{ variables.HEAD_NODE_IP }}:8000 \
+        --endpoint /v1/chat/completions \
+        --dataset-name random \
+        --seed 100 \
+        --random-input-len ${{ variables.ISL }} \
+        --random-output-len ${{ variables.OSL }} \
+        --random-range-ratio 1.0 \
+        --num-prompts $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) \
+        --max-concurrency ${CONCURRENCY} \
+        --request-rate inf \
+        --ignore-eos \
+        --save-result \
+        --num-warmups "$((2 * ${CONCURRENCY}))" \
+        --percentile-metrics 'ttft,tpot,itl,e2el' \
+        --result-dir ${SFLOW_WORKFLOW_OUTPUT_DIR}/benchmark_serving_concurrency_${CONCURRENCY} \
+        --result-filename benchmark_serving_isl_${{ variables.ISL }}_osl_${{ variables.OSL }}_concurrency_${CONCURRENCY}.json
     - echo "Benchmarking finished"
     resources:
       nodes:

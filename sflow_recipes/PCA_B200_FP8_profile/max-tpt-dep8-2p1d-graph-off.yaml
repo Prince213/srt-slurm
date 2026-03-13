@@ -427,7 +427,7 @@ workflow:
       1024 --tensor-parallel-size 8 --data-parallel-size 8 --expert-parallel-size 8 --enable-dp-attention --enable-dp-lm-head
       --attention-backend trtllm_mla --kv-cache-dtype fp8_e4m3 --moe-runner-backend flashinfer_trtllm --moe-dense-tp-size
       1 --stream-interval 30 --watchdog-timeout 1000000 --enable-flashinfer-allreduce-fusion --disable-radix-cache --disaggregation-bootstrap-port
-      $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+      $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 --disable-cuda-graph ${EXTRA_DECODE_ARGS}
     resources:
       gpus:
         count: ${{ variables.GEN_TP_SIZE }}

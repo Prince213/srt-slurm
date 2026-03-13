@@ -154,11 +154,6 @@ workflow:
         indices:
         - 0
     script:
-    - apt-get update
-    - apt-get install -y curl
-    - curl -L -o InferenceX.tar.gz https://github.com/SemiAnalysisAI/InferenceX/archive/89ce6098ef2bc4576a735c43f39c7d972b091cfc.tar.gz
-    - tar xf InferenceX.tar.gz
-    - mv InferenceX-89ce6098ef2bc4576a735c43f39c7d972b091cfc InferenceX
     - echo "AIPerf installed"
     - sleep 3600
     probes:
@@ -450,6 +445,11 @@ workflow:
       ntasks: 1
     script:
     - set -x
+    - apt-get update
+    - apt-get install -y curl
+    - curl -L -o InferenceX.tar.gz https://github.com/SemiAnalysisAI/InferenceX/archive/89ce6098ef2bc4576a735c43f39c7d972b091cfc.tar.gz
+    - tar xf InferenceX.tar.gz
+    - mv InferenceX-89ce6098ef2bc4576a735c43f39c7d972b091cfc InferenceX
     - export COLUMNS=200
     - |
       python3 InferenceX/utils/bench_serving/benchmark_serving.py \

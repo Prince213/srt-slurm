@@ -233,7 +233,7 @@ workflow:
       # Check for and install nats-server if missing
       if ! command -v nats-server >/dev/null 2>&1; then
         mkdir -p configs
-        export NATS_VERSION=${NATS_VERSION:-v2.10.4}
+        export NATS_VERSION=${NATS_VERSION:-v2.10.28}
         ARCH="$(uname -m)"
         case "$ARCH" in
           x86_64)  ARCH_SHORT="amd64" ;;
@@ -283,7 +283,7 @@ workflow:
       # Check for and install etcd if missing
       if ! command -v etcd >/dev/null 2>&1; then
         mkdir -p configs
-        export ETCD_VERSION=${ETCD_VERSION:-v3.5.12}
+        export ETCD_VERSION=${ETCD_VERSION:-v3.5.21}
         ARCH="$(uname -m)"
         case "$ARCH" in
           x86_64)  ARCH_SHORT="amd64" ;;

@@ -1,0 +1,573 @@
+version: "0.1"
+
+variables:
+  # Slurm Configuration
+  SLURM_ACCOUNT:
+    description: "SLURM account"
+    value: rogliu
+  SLURM_PARTITION:
+    description: "SLURM partition"
+    value: gamoraq
+  SLURM_TIMELIMIT:
+    description: "SLURM time limit (minutes)"
+    value: 120
+  GPUS_PER_NODE:
+    description: "GPUs per node"
+    type: integer
+    value: 4
+  SLURM_NODES:
+    description: "Number of nodes"
+    value: 1
+
+  # Model Configuration
+  SERVED_MODEL_NAME:
+    description: "Served model name (used by proxy and benchmark)"
+    value: Qwen3-8B-FP8
+  MODEL_NAME:
+    description: "HuggingFace model identifier or local path"
+    value: Qwen/Qwen3-8B-FP8
+
+  # Prefill Server Configuration
+  NUM_PREFILL_SERVERS:
+    description: "Number of prefill (kv_producer) instances"
+    type: integer
+    value: 1
+  PREFILL_TP_SIZE:
+    description: "Prefill tensor parallel size"
+    type: integer
+    value: 2
+  PREFILL_PP_SIZE:
+    description: "Prefill pipeline parallel size"
+    type: integer
+    value: 1
+  PREFILL_GPUS_PER_WORKER:
+    description: "GPUs per prefill worker"
+    type: integer
+    value: ${{ variables.PREFILL_TP_SIZE * variables.PREFILL_PP_SIZE }}
+  PREFILL_BASE_PORT:
+    description: "Base HTTP port for prefill instances"
+    type: integer
+    value: 20001
+  PREFILL_GPU_MEMORY_UTILIZATION:
+    description: "Prefill GPU memory utilization fraction"
+    value: 0.9
+  PREFILL_MAX_MODEL_LEN:
+    description: "Prefill max model length"
+    type: integer
+    value: 8192
+  EXTRA_PREFILL_ARGS:
+    description: "Extra vllm serve arguments for prefill"
+    value: "--enforce-eager"
+
+  # Decode Server Configuration
+  NUM_DECODE_SERVERS:
+    description: "Number of decode (kv_consumer) instances"
+    type: integer
+    value: 1
+  DECODE_TP_SIZE:
+    description: "Decode tensor parallel size"
+    type: integer
+    value: 2
+  DECODE_PP_SIZE:
+    description: "Decode pipeline parallel size"
+    type: integer
+    value: 1
+  DECODE_GPUS_PER_WORKER:
+    description: "GPUs per decode worker"
+    type: integer
+    value: ${{ variables.DECODE_TP_SIZE * variables.DECODE_PP_SIZE }}
+  DECODE_BASE_PORT:
+    description: "Base HTTP port for decode instances"
+    type: integer
+    value: 20101
+  DECODE_GPU_MEMORY_UTILIZATION:
+    description: "Decode GPU memory utilization fraction"
+    value: 0.9
+  DECODE_MAX_MODEL_LEN:
+    description: "Decode max model length"
+    type: integer
+    value: 8192
+  EXTRA_DECODE_ARGS:
+    description: "Extra vllm serve arguments for decode"
+    value: "--enforce-eager"
+
+  # KV Transfer Configuration
+  KV_CONNECTOR:
+    description: "KV connector type (P2pNcclConnector, NixlConnector)"
+    value: P2pNcclConnector
+  KV_BUFFER_SIZE_PRODUCER:
+    description: "KV buffer size for producer (small, prefill doesn't receive KV)"
+    value: "1e1"
+  KV_BUFFER_SIZE_CONSUMER:
+    description: "KV buffer size for consumer (~10% of GPU memory in bytes)"
+    value: "8e9"
+
+  # Proxy Configuration (v0.17 xPyD proxy: port 10001 for HTTP, 30001 for ZMQ service discovery)
+  PROXY_HTTP_PORT:
+    description: "Proxy HTTP port for client requests"
+    type: integer
+    value: 10001
+  PROXY_DISCOVERY_PORT:
+    description: "Proxy ZMQ service discovery port (P/D instances register here)"
+    type: integer
+    value: 30001
+
+  # Benchmark Configuration
+  ISL:
+    description: "Input sequence length"
+    type: integer
+    value: 1024
+  OSL:
+    description: "Output sequence length"
+    type: integer
+    value: 1024
+  MULTI_ROUND:
+    description: "Number of benchmark rounds"
+    type: integer
+    value: 2
+  CONCURRENCY:
+    description: "Benchmark concurrency"
+    type: integer
+    value: 16
+
+  # Container Images
+  VLLM_IMAGE:
+    description: "vLLM container image (aarch64 for GB300)"
+    value: vllm/vllm-openai:v0.17.1-aarch64
+  BENCHMARK_IMAGE:
+    description: "Benchmark container image"
+    value: python:3.12-slim
+
+artifacts:
+  - name: LOCAL_MODEL_PATH
+    uri: fs:///home/rogliu/gcn/builds/Qwen3-8B-FP8
+  - name: DISAGG_PROXY_SCRIPT
+    uri: file://disagg_proxy_p2p_nccl_xpyd.py
+    content: |
+      import os
+      import socket
+      import threading
+      import time
+      import uuid
+      from typing import Any
+
+      import aiohttp
+      import msgpack
+      import zmq
+      from quart import Quart, make_response, request
+
+      count = 0
+      prefill_instances: dict[str, Any] = {}
+      decode_instances: dict[str, Any] = {}
+
+      prefill_cv = threading.Condition()
+      decode_cv = threading.Condition()
+
+      DEFAULT_PING_SECONDS = 5
+
+
+      def _remove_oldest_instances(instances):
+          oldest_key = next(iter(instances), None)
+          while oldest_key is not None:
+              value = instances[oldest_key]
+              if value[1] > time.time():
+                  break
+              print(f"Remove [HTTP:{oldest_key}, ZMQ:{value[0]}, stamp:{value[1]}]")
+              instances.pop(oldest_key, None)
+              oldest_key = next(iter(instances), None)
+
+
+      def _listen_for_register(poller, router_socket):
+          while True:
+              socks = dict(poller.poll())
+              if router_socket in socks:
+                  remote_address, message = router_socket.recv_multipart()
+                  data = msgpack.loads(message)
+                  if data["type"] == "P":
+                      global prefill_instances, prefill_cv
+                      with prefill_cv:
+                          node = prefill_instances.get(data["http_address"], None)
+                          prefill_instances[data["http_address"]] = (
+                              data["zmq_address"],
+                              time.time() + DEFAULT_PING_SECONDS,
+                          )
+                          _remove_oldest_instances(prefill_instances)
+                  elif data["type"] == "D":
+                      global decode_instances, decode_cv
+                      with decode_cv:
+                          node = decode_instances.get(data["http_address"], None)
+                          decode_instances[data["http_address"]] = (
+                              data["zmq_address"],
+                              time.time() + DEFAULT_PING_SECONDS,
+                          )
+                          _remove_oldest_instances(decode_instances)
+                  else:
+                      print(f"Unexpected message from {remote_address}: {data}")
+                      return
+                  if node is None:
+                      print(f"Add [HTTP:{data['http_address']}, ZMQ:{data['zmq_address']}]")
+
+
+      def start_service_discovery(hostname, port):
+          context = zmq.Context()
+          router_socket = context.socket(zmq.ROUTER)
+          router_socket.bind(f"tcp://{hostname}:{port}")
+          poller = zmq.Poller()
+          poller.register(router_socket, zmq.POLLIN)
+          t = threading.Thread(target=_listen_for_register, args=[poller, router_socket], daemon=True)
+          t.start()
+          return t
+
+
+      AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
+      app = Quart(__name__)
+
+
+      def random_uuid():
+          return str(uuid.uuid4().hex)
+
+
+      async def forward_request(url, data, request_id):
+          async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
+              headers = {
+                  "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY', 'EMPTY')}",
+                  "X-Request-Id": request_id,
+              }
+              async with session.post(url=url, json=data, headers=headers) as response:
+                  if response.status == 200:
+                      async for chunk_bytes in response.content.iter_chunked(1024):
+                          yield chunk_bytes
+
+
+      @app.route("/v1/completions", methods=["POST"])
+      @app.route("/v1/chat/completions", methods=["POST"])
+      async def handle_request():
+          try:
+              original_request_data = await request.get_json()
+              prefill_request = original_request_data.copy()
+              prefill_request["max_tokens"] = ${{ variables.ISL + variables.OSL }}
+              if "max_completion_tokens" in prefill_request:
+                  prefill_request["max_completion_tokens"] = ${{ variables.ISL + variables.OSL }}
+              prefill_request.pop("min_tokens", None)
+              extra_inputs = prefill_request.get("extra_inputs", {})
+              if isinstance(extra_inputs, dict):
+                  extra_inputs.pop("min_tokens", None)
+                  extra_inputs.pop("ignore_eos", None)
+
+              global count, prefill_instances, prefill_cv, decode_instances, decode_cv
+              with prefill_cv:
+                  prefill_list = list(prefill_instances.items())
+              with decode_cv:
+                  decode_list = list(decode_instances.items())
+
+              prefill_addr, prefill_zmq_addr = prefill_list[count % len(prefill_list)]
+              prefill_zmq_addr = prefill_zmq_addr[0]
+              decode_addr, decode_zmq_addr = decode_list[count % len(decode_list)]
+              decode_zmq_addr = decode_zmq_addr[0]
+
+              print(f"handle_request count: {count}, [HTTP:{prefill_addr}, ZMQ:{prefill_zmq_addr}] -> [HTTP:{decode_addr}, ZMQ:{decode_zmq_addr}]")
+              count += 1
+
+              request_id = f"___prefill_addr_{prefill_zmq_addr}___decode_addr_{decode_zmq_addr}_{random_uuid()}"
+
+              async for _ in forward_request(f"http://{prefill_addr}{request.path}", prefill_request, request_id):
+                  continue
+
+              generator = forward_request(f"http://{decode_addr}{request.path}", original_request_data, request_id)
+              response = await make_response(generator)
+              response.timeout = None
+              return response
+          except Exception as e:
+              import traceback
+              print(f"Error in proxy: {e}")
+              traceback.print_exc()
+
+
+      if __name__ == "__main__":
+          import sys
+          discovery_port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
+          http_port = int(sys.argv[2]) if len(sys.argv) > 2 else 10001
+          t = start_service_discovery("0.0.0.0", discovery_port)
+          app.run(host="0.0.0.0", port=http_port)
+          t.join()
+
+backends:
+  - name: slurm_cluster
+    type: slurm
+    default: true
+    time: ${{ variables.SLURM_TIMELIMIT }}
+    nodes: ${{ variables.SLURM_NODES }}
+    partition: ${{ variables.SLURM_PARTITION }}
+    account: ${{ variables.SLURM_ACCOUNT }}
+    gpus_per_node: ${{ variables.GPUS_PER_NODE }}
+
+operators:
+  - name: vllm
+    type: srun
+    container_name: vllm_container
+    container_writable: true
+    mpi: pmix
+    extra_args:
+      - --container-image=${{ variables.VLLM_IMAGE }}
+  - name: benchmark
+    type: srun
+    container_name: benchmark_container
+    container_writable: true
+    mpi: pmix
+    extra_args:
+      - --container-image=${{ variables.BENCHMARK_IMAGE }}
+
+workflow:
+  name: vllm_disagg_serving
+  timeout: 115m
+
+  variables:
+    HEAD_NODE_IP:
+      description: "Head node IP (resolved after allocation)"
+      value: "${{ backends.slurm_cluster.nodes[0].ip_address }}"
+
+  tasks:
+    - name: load_image
+      operator:
+        name: vllm
+        ntasks: ${{ variables.SLURM_NODES }}
+        ntasks_per_node: 1
+      script:
+        - echo "Image Loaded"
+        - sleep 3600
+      probes:
+        readiness:
+          log_watch:
+            regex_pattern: "Image Loaded"
+            match_count: ${{ variables.SLURM_NODES }}
+          timeout: 1200
+          interval: 2
+
+    - name: load_benchmark_image
+      operator:
+        name: benchmark
+        ntasks: 1
+      resources:
+        nodes:
+          indices: [0]
+      script:
+        - echo "Benchmark Image Loaded"
+        - sleep 3600
+      probes:
+        readiness:
+          log_watch:
+            regex_pattern: "Benchmark Image Loaded"
+          timeout: 1200
+          interval: 2
+
+    - name: gpu_monitor
+      operator:
+        name: vllm
+        ntasks_per_node: 1
+      resources:
+        nodes:
+          count: ${{ variables.SLURM_NODES }}
+      script:
+        - echo "Starting gpu monitor"
+        - >
+          nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,power.draw,clocks.sm,clocks.mem,memory.total,memory.used
+          --format=csv,noheader,nounits -lms 2000 |
+          while IFS= read -r input || [ -n "$input" ] ;
+          do timestamp=$(date +%s%3N);
+          printf "%s.%s,%s\n" "${timestamp:0:10}" "${timestamp:10:3}" "${input}";
+          done
+          >> ${SFLOW_TASK_OUTPUT_DIR}/gpu_monitor_node_${SLURM_NODEID}_${SLURMD_NODENAME}.log
+      probes:
+        readiness:
+          log_watch:
+            regex_pattern: "Starting gpu monitor"
+          timeout: 60
+          interval: 2
+      depends_on:
+        - load_image
+
+    # xPyD Proxy (must start before P/D instances so they can register via ZMQ)
+    - name: proxy_server
+      operator: vllm
+      script:
+        - set -x
+        - pip install --break-system-packages --ignore-installed --quiet quart aiohttp msgpack pyzmq
+        - python3 ${{ artifacts.DISAGG_PROXY_SCRIPT.path }} ${PROXY_DISCOVERY_PORT} ${PROXY_HTTP_PORT}
+      resources:
+        nodes:
+          indices: [0]
+      probes:
+        readiness:
+          tcp_port:
+            port: ${{ variables.PROXY_HTTP_PORT }}
+          timeout: 120
+          interval: 5
+      depends_on:
+        - load_image
+
+    # vLLM Prefill instances (kv_producer)
+    - name: prefill_server
+      operator:
+        name: vllm
+        ntasks_per_node: 1
+      replicas:
+        count: ${{ variables.NUM_PREFILL_SERVERS }}
+        policy: "parallel"
+      script:
+        - set -x
+        - export DEEP_GEMM_DISABLED=1
+        # - export TORCH_COMPILE_DISABLE=1
+        - export TRITON_LIBCUDA_PATH=$(find /usr/lib /usr/local/lib -name 'libcuda.so*' 2>/dev/null | head -1 | xargs dirname 2>/dev/null || echo /usr/lib/aarch64-linux-gnu)
+        - echo ${CUDA_VISIBLE_DEVICES}
+        - export HTTP_PORT=$((${PREFILL_BASE_PORT} + ${SFLOW_REPLICA_INDEX}))
+        - export KV_PORT=$((21001 + ${SFLOW_REPLICA_INDEX}))
+        - |
+          KV_CONFIG=$(python3 -c "
+          import json
+          config = {
+              'kv_connector': '${KV_CONNECTOR}',
+              'kv_role': 'kv_producer',
+              'kv_buffer_size': '${KV_BUFFER_SIZE_PRODUCER}',
+              'kv_port': '${KV_PORT}',
+              'kv_connector_extra_config': {
+                  'proxy_ip': '${HEAD_NODE_IP}',
+                  'proxy_port': '${PROXY_DISCOVERY_PORT}',
+                  'http_port': '${HTTP_PORT}'
+              }
+          }
+          print(json.dumps(config))
+          ")
+        - >
+          vllm serve ${{ artifacts.LOCAL_MODEL_PATH.path }}
+          --host 0.0.0.0
+          --port ${HTTP_PORT}
+          --served-model-name ${{ variables.SERVED_MODEL_NAME }}
+          --tensor-parallel-size ${{ variables.PREFILL_TP_SIZE }}
+          --pipeline-parallel-size ${{ variables.PREFILL_PP_SIZE }}
+          --gpu-memory-utilization ${{ variables.PREFILL_GPU_MEMORY_UTILIZATION }}
+          --max-model-len ${{ variables.PREFILL_MAX_MODEL_LEN }}
+          --trust-remote-code
+          --max-num-seqs ${{ variables.CONCURRENCY }}
+          --no-enable-chunked-prefill
+          --kv-transfer-config "${KV_CONFIG}"
+          ${{ variables.EXTRA_PREFILL_ARGS }}
+      resources:
+        gpus:
+          count: ${{ variables.PREFILL_GPUS_PER_WORKER }}
+      depends_on:
+        - proxy_server
+      probes:
+        readiness:
+          log_watch:
+            regex_pattern: "Application startup complete"
+          timeout: 600
+          interval: 10
+        failure:
+          log_watch:
+            regex_pattern: "Traceback \\(most recent call last\\)|AssertionError|EngineDeadError|EngineCore encountered a fatal error"
+          interval: 10
+
+    # vLLM Decode instances (kv_consumer)
+    - name: decode_server
+      operator:
+        name: vllm
+        ntasks_per_node: 1
+      replicas:
+        count: ${{ variables.NUM_DECODE_SERVERS }}
+        policy: "parallel"
+      script:
+        - set -x
+        - export DEEP_GEMM_DISABLED=1
+        # - export TORCH_COMPILE_DISABLE=1
+        - export TRITON_LIBCUDA_PATH=$(find /usr/lib /usr/local/lib -name 'libcuda.so*' 2>/dev/null | head -1 | xargs dirname 2>/dev/null || echo /usr/lib/aarch64-linux-gnu)
+        - echo ${CUDA_VISIBLE_DEVICES}
+        - export HTTP_PORT=$((${DECODE_BASE_PORT} + ${SFLOW_REPLICA_INDEX}))
+        - export KV_PORT=$((22001 + ${SFLOW_REPLICA_INDEX}))
+        - |
+          KV_CONFIG=$(python3 -c "
+          import json
+          config = {
+              'kv_connector': '${KV_CONNECTOR}',
+              'kv_role': 'kv_consumer',
+              'kv_buffer_size': '${KV_BUFFER_SIZE_CONSUMER}',
+              'kv_port': '${KV_PORT}',
+              'kv_connector_extra_config': {
+                  'proxy_ip': '${HEAD_NODE_IP}',
+                  'proxy_port': '${PROXY_DISCOVERY_PORT}',
+                  'http_port': '${HTTP_PORT}'
+              }
+          }
+          print(json.dumps(config))
+          ")
+        - >
+          vllm serve ${{ artifacts.LOCAL_MODEL_PATH.path }}
+          --host 0.0.0.0
+          --port ${HTTP_PORT}
+          --served-model-name ${{ variables.SERVED_MODEL_NAME }}
+          --tensor-parallel-size ${{ variables.DECODE_TP_SIZE }}
+          --pipeline-parallel-size ${{ variables.DECODE_PP_SIZE }}
+          --gpu-memory-utilization ${{ variables.DECODE_GPU_MEMORY_UTILIZATION }}
+          --max-model-len ${{ variables.DECODE_MAX_MODEL_LEN }}
+          --trust-remote-code
+          --max-num-seqs ${{ variables.CONCURRENCY }}
+          --kv-transfer-config "${KV_CONFIG}"
+          ${{ variables.EXTRA_DECODE_ARGS }}
+      resources:
+        gpus:
+          count: ${{ variables.DECODE_GPUS_PER_WORKER }}
+      depends_on:
+        - proxy_server
+      probes:
+        readiness:
+          log_watch:
+            regex_pattern: "Application startup complete"
+          timeout: 600
+          interval: 10
+        failure:
+          log_watch:
+            regex_pattern: "Traceback \\(most recent call last\\)|AssertionError|EngineDeadError|EngineCore encountered a fatal error"
+          interval: 10
+
+    # Benchmark using aiperf (sequential sweep over CONCURRENCY values)
+    - name: benchmark
+      operator:
+        name: benchmark
+        ntasks: 1
+      script:
+        - set -x
+        - pip install aiperf==0.3.0
+        - export COLUMNS=200
+        - >
+          aiperf profile --artifact-dir ${SFLOW_WORKFLOW_OUTPUT_DIR}/aiperf_concurrency_${CONCURRENCY}
+          --model ${{ variables.SERVED_MODEL_NAME }}
+          --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }}
+          --endpoint-type chat
+          --endpoint /v1/chat/completions
+          --streaming
+          --url http://${{ variables.HEAD_NODE_IP }}:${{ variables.PROXY_HTTP_PORT }}
+          --synthetic-input-tokens-mean ${{ variables.ISL }}
+          --synthetic-input-tokens-stddev 0
+          --output-tokens-mean ${{ variables.OSL }}
+          --output-tokens-stddev 0
+          --extra-inputs "max_tokens:${{ variables.OSL }}"
+          --extra-inputs "min_tokens:${{ variables.OSL }}"
+          --extra-inputs "ignore_eos:true"
+          --extra-inputs "repetition_penalty:1.0"
+          --extra-inputs "temperature:0.01"
+          --concurrency ${CONCURRENCY}
+          --request-count $((${{ variables.MULTI_ROUND }}*${CONCURRENCY}))
+          --warmup-request-count ${CONCURRENCY}
+          --num-dataset-entries $((${{ variables.MULTI_ROUND }}*${CONCURRENCY}))
+          --random-seed 100
+          -H 'Authorization: Bearer NOT USED'
+          -H 'Accept: text/event-stream'
+          --record-processors 8
+          --ui simple
+        - echo "Benchmarking finished"
+      resources:
+        nodes:
+          indices: [0]
+      depends_on:
+        - prefill_server
+        - decode_server
+        - load_benchmark_image

@@ -456,6 +456,7 @@ workflow:
         --backend openai-chat \
         --base-url http://${{ variables.HEAD_NODE_IP }}:8000 \
         --endpoint /v1/chat/completions \
+        --use-chat-template \
         --dataset-name random \
         --seed 100 \
         --random-input-len ${{ variables.ISL }} \
@@ -478,6 +479,7 @@ workflow:
         --backend openai-chat \
         --base-url http://${{ variables.HEAD_NODE_IP }}:8000 \
         --endpoint /v1/chat/completions \
+        --use-chat-template \
         --dataset-name random \
         --seed 100 \
         --random-input-len ${{ variables.ISL }} \

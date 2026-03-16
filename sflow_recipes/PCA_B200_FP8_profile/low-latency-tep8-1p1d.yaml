@@ -355,7 +355,7 @@ workflow:
       fi
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode prefill --trust-remote-code --quantization fp8 --disaggregation-transfer-backend nixl --mem-fraction-static
-      0.85 --max-prefill-tokens 32768 --chunked-prefill-size 32768 --context-length 9600 --max-running-requests 512 --disable-cuda-graph
+      0.85 --max-prefill-tokens 32768 --chunked-prefill-size 32768 --context-length 65536 --max-running-requests 512 --disable-cuda-graph
       --tensor-parallel-size 8 --data-parallel-size 1 --expert-parallel-size 8 --attention-backend trtllm_mla --kv-cache-dtype
       fp8_e4m3 --moe-runner-backend flashinfer_trtllm --stream-interval 30 --watchdog-timeout 1000000 --enable-flashinfer-allreduce-fusion
       --disable-radix-cache --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host
@@ -424,7 +424,7 @@ workflow:
       fi
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode decode --trust-remote-code --quantization fp8 --disaggregation-transfer-backend nixl --mem-fraction-static
-      0.85 --max-prefill-tokens 32768 --chunked-prefill-size 32768 --context-length 9600 --max-running-requests 512 --cuda-graph-max-bs
+      0.85 --max-prefill-tokens 32768 --chunked-prefill-size 32768 --context-length 65536 --max-running-requests 512 --cuda-graph-max-bs
       512 --tensor-parallel-size 8 --data-parallel-size 1 --expert-parallel-size 8 --attention-backend trtllm_mla --kv-cache-dtype
       fp8_e4m3 --moe-runner-backend flashinfer_trtllm --stream-interval 30 --watchdog-timeout 1000000 --enable-flashinfer-allreduce-fusion
       --disable-radix-cache --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host

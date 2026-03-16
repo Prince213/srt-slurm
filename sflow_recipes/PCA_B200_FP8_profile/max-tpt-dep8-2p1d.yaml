@@ -96,6 +96,9 @@ variables:
   FRONTEND_PORT:
     description: Frontend listening port
     value: 8000
+  DYN_REQUEST_PLANE:
+    description: Dynamo request plane
+    value: nats
 artifacts:
 - name: LOCAL_MODEL_PATH
   uri: fs://${{ variables.MODEL_PATH }}
@@ -290,7 +293,6 @@ workflow:
         echo "dynamo.sglang not found, installing ai-dynamo packages..."
         pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.0 ai-dynamo==0.8.0
       fi
-    - export DYN_REQUEST_PLANE="nats"
     - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
     resources:
       nodes:
@@ -327,7 +329,6 @@ workflow:
     - export MC_FORCE_MNNVL="1"
     - export NCCL_MNNVL_ENABLE="1"
     - export NCCL_CUMEM_ENABLE="1"
-    - export DYN_REQUEST_PLANE="nats"
     - export FIRST_CUDA_DEVICE=$(echo ${CUDA_VISIBLE_DEVICES} | cut -d',' -f1)
     - |
       if [ "${CTX_ENABLE_ATTENTION_DP}" == "" ]; then
@@ -397,7 +398,6 @@ workflow:
     - export MC_FORCE_MNNVL="1"
     - export NCCL_MNNVL_ENABLE="1"
     - export NCCL_CUMEM_ENABLE="1"
-    - export DYN_REQUEST_PLANE="nats"
     - export FIRST_CUDA_DEVICE=$(echo ${CUDA_VISIBLE_DEVICES} | cut -d',' -f1)
     - |
       if [ "${GEN_ENABLE_ATTENTION_DP}" == "" ]; then

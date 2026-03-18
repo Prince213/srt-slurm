@@ -316,6 +316,7 @@ workflow:
     script:
     - set -x
     - echo ${CUDA_VISIBLE_DEVICES}
+    - export SGLANG_TORCH_PROFILER_DIR=${SFLOW_TASK_OUTPUT_DIR}
     - export TORCH_DISTRIBUTED_DEFAULT_TIMEOUT="1800"
     - export PYTHONUNBUFFERED="1"
     - export DYN_SKIP_SGLANG_LOG_FORMATTING="1"
@@ -384,6 +385,7 @@ workflow:
     script:
     - set -x
     - echo ${CUDA_VISIBLE_DEVICES}
+    - export SGLANG_TORCH_PROFILER_DIR=${SFLOW_TASK_OUTPUT_DIR}
     - export TORCH_DISTRIBUTED_DEFAULT_TIMEOUT="1800"
     - export PYTHONUNBUFFERED="1"
     - export DYN_SKIP_SGLANG_LOG_FORMATTING="1"

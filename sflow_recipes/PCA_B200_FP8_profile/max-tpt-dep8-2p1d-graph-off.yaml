@@ -473,7 +473,7 @@ workflow:
         --percentile-metrics 'ttft,tpot,itl,e2el' \
         --result-dir ${SFLOW_TASK_OUTPUT_DIR} \
         --result-filename prefill_benchmark_serving_isl_${{ variables.ISL }}_osl_${{ variables.OSL }}_concurrency_${CONCURRENCY}.json \
-        --profile --pd-separated --profile-prefill-url http://${{ task.prefill_server[0].nodes[0].ip_address }}:8082 http://${{ task.prefill_server[1].nodes[0].ip_address }}:8082 --profile-start-step 400 --profile-num-steps 10
+        --profile --pd-separated --profile-prefill-url http://${{ task.prefill_server[0].nodes[0].ip_address }}:8082 http://${{ task.prefill_server[1].nodes[0].ip_address }}:8082 --profile-start-step 400 --profile-num-steps 2
       mkdir -p ${SFLOW_TASK_OUTPUT_DIR}/profile/prefill_server_0
       mv ${SFLOW_WORKFLOW_OUTPUT_DIR}/prefill_server_0/*.trace.json.gz ${SFLOW_TASK_OUTPUT_DIR}/profile/prefill_server_0/
       mkdir -p ${SFLOW_TASK_OUTPUT_DIR}/profile/prefill_server_1

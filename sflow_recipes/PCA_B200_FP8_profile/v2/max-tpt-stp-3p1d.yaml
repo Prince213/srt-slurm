@@ -1,0 +1,520 @@
+version: '0.1'
+variables:
+  SLURM_ACCOUNT:
+    description: SLURM account
+    value: rogliu
+  SLURM_PARTITION:
+    description: SLURM partition
+    value: gamoraq
+  SLURM_TIMELIMIT:
+    description: SLURM time limit
+    value: 120
+  GPUS_PER_NODE:
+    description: GPUs per node
+    value: 8
+  SLURM_NODES:
+    description: Number of nodes
+    type: integer
+    value: 4
+  SERVED_MODEL_NAME:
+    description: Served model name
+    value: deepseek-ai/DeepSeek-R1
+  MODEL_PATH:
+    description: Model path (fs or name)
+    value: dsr1-fp8
+  EXTRA_FRONTEND_ARGS:
+    description: Extra frontend arguments
+    value: ''
+  ISL:
+    description: Input sequence length
+    value: 8192
+  OSL:
+    description: Output sequence length
+    value: 1024
+  MULTI_ROUND:
+    description: Number of benchmark rounds
+    value: 8
+  CONCURRENCY:
+    description: Concurrency
+    value: 1024
+    domain:
+    - 1024
+  EXTRA_BENCHMARK_ARGS:
+    description: "Extra benchmark arguments"
+    value: ""
+  AIPERF_IMAGE:
+    description: AIPerf container image
+    value: gitlab-master.nvidia.com/perflab-compute/unified-benchmarks/aiperf:0.3.0-x86
+  NUM_CTX_SERVERS:
+    description: Number of context/prefill servers
+    value: 3
+  CTX_TP_SIZE:
+    description: Context tensor parallel size
+    type: integer
+    value: 8
+  CTX_DP_SIZE:
+    description: Context data parallel size
+    type: integer
+    value: 8
+  CTX_PP_SIZE:
+    description: Context pipeline parallel size
+    type: integer
+    value: 1
+  CTX_ENABLE_ATTENTION_DP:
+    description: Context enable attention DP
+    value: --enable-dp-attention
+  NUM_GEN_SERVERS:
+    description: Number of generation/decode servers
+    value: 1
+  GEN_TP_SIZE:
+    description: Generation tensor parallel size
+    type: integer
+    value: 8
+  GEN_DP_SIZE:
+    description: Generation data parallel size
+    type: integer
+    value: 8
+  GEN_PP_SIZE:
+    description: Generation pipeline parallel size
+    type: integer
+    value: 1
+  GEN_ENABLE_ATTENTION_DP:
+    description: Generation enable attention DP
+    value: --enable-dp-attention
+  EXTRA_PREFILL_ARGS:
+    description: Extra prefill arguments
+    value: ''
+  EXTRA_DECODE_ARGS:
+    description: Extra decode arguments
+    value: ''
+  DYNAMO_IMAGE:
+    description: SGLang container image
+    value: lmsysorg/sglang:v0.5.8.post1-cu130-amd64
+  NUM_FRONTENDS:
+    description: Number of frontend instances
+    value: 1
+  FRONTEND_PORT:
+    description: Frontend listening port
+    value: 8000
+  DYN_REQUEST_PLANE:
+    description: Dynamo request plane
+    value: nats
+artifacts:
+- name: LOCAL_MODEL_PATH
+  uri: fs://${{ variables.MODEL_PATH }}
+backends:
+- name: slurm_cluster
+  type: slurm
+  default: true
+  time: ${{ variables.SLURM_TIMELIMIT }}
+  nodes: ${{ variables.SLURM_NODES }}
+  partition: ${{ variables.SLURM_PARTITION }}
+  account: ${{ variables.SLURM_ACCOUNT }}
+  gpus_per_node: ${{ variables.GPUS_PER_NODE }}
+operators:
+- name: dynamo_sglang
+  type: srun
+  container_image: ${{ variables.DYNAMO_IMAGE }}
+  container_writable: true
+  mpi: pmix
+- name: aiperf
+  type: srun
+  container_image: ${{ variables.AIPERF_IMAGE }}
+  container_writable: true
+  mpi: pmix
+workflow:
+  name: b200-fp8-stp-max-tpt-3p-1d-profile
+  timeout: 115m
+  variables:
+    HEAD_NODE_IP:
+      description: Head node IP (resolved after allocation)
+      value: ${{ backends.slurm_cluster.nodes[0].ip_address }}
+    ETCD_ENDPOINTS:
+      description: ETCD endpoints
+      value: ${{ backends.slurm_cluster.nodes[0].ip_address }}:2379
+    NATS_SERVER:
+      description: NATS server URL
+      value: nats://${{ backends.slurm_cluster.nodes[0].ip_address }}:4222
+  tasks:
+  - name: load_image
+    operator:
+      name: dynamo_sglang
+      ntasks: ${{ variables.SLURM_NODES }}
+      ntasks_per_node: 1
+    script:
+    - echo "Image Loaded"
+    - sleep 3600
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: Image Loaded
+          match_count: ${{ variables.SLURM_NODES }}
+        timeout: 1200
+        interval: 2
+  - name: install_aiperf
+    operator:
+      name: aiperf
+      ntasks_per_node: 1
+    resources:
+      nodes:
+        indices:
+        - 0
+    script:
+    - pip install aiperf==0.3.0
+    - echo "AIPerf installed"
+    - sleep 3600
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: AIPerf installed
+        timeout: 1200
+        interval: 2
+  - name: gpu_monitor
+    operator:
+      name: dynamo_sglang
+      ntasks_per_node: 1
+    resources:
+      nodes:
+        count: ${{ variables.SLURM_NODES }}
+    script:
+    - echo "Starting gpu monitor"
+    - |
+      nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,power.draw,clocks.sm,clocks.mem,memory.total,memory.used --format=csv,noheader,nounits -lms 2000 | while IFS= read -r input || [ -n "$input" ] ; do timestamp=$(date +%s%3N); printf "%s.%s,%s\n" "${timestamp:0:10}" "${timestamp:10:3}" "${input}"; done >> ${SFLOW_TASK_OUTPUT_DIR}/gpu_monitor_node_${SLURM_NODEID}_${SLURMD_NODENAME}.log
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: Starting gpu monitor
+        timeout: 60
+        interval: 2
+    depends_on:
+    - load_image
+    - install_aiperf
+  - name: nats_server
+    operator: dynamo_sglang
+    script:
+    - |
+      # Check for and install nats-server if missing
+      if ! command -v nats-server >/dev/null 2>&1; then
+        mkdir -p configs
+        export NATS_VERSION=${NATS_VERSION:-v2.10.4}
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64)  ARCH_SHORT="amd64" ;;
+          aarch64) ARCH_SHORT="arm64" ;;
+          *) echo "❌ Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        echo "⬇️  Downloading NATS ($NATS_VERSION) for $ARCH_SHORT..."
+        NATS_DEB="nats-server-${NATS_VERSION}-$ARCH_SHORT.deb"
+        NATS_URL="https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/${NATS_DEB}"
+        wget -q --show-progress --tries=3 --waitretry=5 "$NATS_URL" -O "configs/${NATS_DEB}"
+        echo "📁 Extracting NATS binary..."
+        TMP_DIR=$(mktemp -d)
+        dpkg-deb -x "configs/${NATS_DEB}" "$TMP_DIR"
+        if [ -f "$TMP_DIR/usr/local/bin/nats-server" ]; then
+          cp "$TMP_DIR/usr/local/bin/nats-server" configs/
+        elif [ -f "$TMP_DIR/usr/bin/nats-server" ]; then
+          cp "$TMP_DIR/usr/bin/nats-server" configs/
+        else
+          echo "❌ Could not find nats-server binary inside the .deb package"
+          ls -R "$TMP_DIR" | head -n 50
+          exit 1
+        fi
+        chmod +x configs/nats-server
+        rm -rf "$TMP_DIR" "configs/${NATS_DEB}"
+        echo "✅ nats-server installed. Contents of configs directory:"
+        ls -lh configs/
+        export PATH="$PWD/configs:$PATH"
+      fi
+    - nats-server -js
+    resources:
+      nodes:
+        indices:
+        - 0
+    probes:
+      readiness:
+        tcp_port:
+          port: 4222
+        timeout: 60
+        interval: 2
+    depends_on:
+    - load_image
+    - install_aiperf
+  - name: etcd_server
+    operator: dynamo_sglang
+    script:
+    - |
+      # Check for and install etcd if missing
+      if ! command -v etcd >/dev/null 2>&1; then
+        mkdir -p configs
+        export ETCD_VERSION=${ETCD_VERSION:-v3.5.12}
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64)  ARCH_SHORT="amd64" ;;
+          aarch64) ARCH_SHORT="arm64" ;;
+          *) echo "❌ Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        echo "⬇️  Downloading ETCD ($ETCD_VERSION) for $ARCH_SHORT..."
+        ETCD_TAR="etcd-${ETCD_VERSION}-linux-$ARCH_SHORT.tar.gz"
+        ETCD_URL="https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/${ETCD_TAR}"
+        wget -q --show-progress --tries=3 --waitretry=5 "$ETCD_URL" -O "configs/${ETCD_TAR}"
+        echo "📁 Extracting ETCD binaries..."
+        tar -xzf "configs/${ETCD_TAR}" --strip-components=1 -C configs etcd-${ETCD_VERSION}-linux-$ARCH_SHORT/etcd etcd-${ETCD_VERSION}-linux-$ARCH_SHORT/etcdctl
+        chmod +x configs/etcd configs/etcdctl
+        rm "configs/${ETCD_TAR}"
+        echo "✅ etcd and etcdctl installed. Contents of configs directory:"
+        ls -lh configs/
+        export PATH="$PWD/configs:$PATH"
+      fi
+    - |
+      etcd --listen-client-urls "http://0.0.0.0:2379" --advertise-client-urls "http://0.0.0.0:2379" --listen-peer-urls "http://0.0.0.0:2380" --initial-advertise-peer-urls "http://${HEAD_NODE_IP}:2380" --initial-cluster "default=http://${HEAD_NODE_IP}:2380" --data-dir /tmp/etcd
+    resources:
+      nodes:
+        indices:
+        - 0
+    probes:
+      readiness:
+        tcp_port:
+          port: 2379
+        timeout: 60
+        interval: 2
+    depends_on:
+    - load_image
+    - install_aiperf
+  - name: frontend_server
+    operator: dynamo_sglang
+    replicas:
+      count: ${{ variables.NUM_FRONTENDS }}
+      policy: parallel
+    script:
+    - set -x
+    - |
+      # Check if dynamo.sglang module exists, if not install required packages
+      if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
+        echo "dynamo.sglang not found, installing ai-dynamo packages..."
+        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.0 ai-dynamo==0.8.0
+      fi
+    - python3 -m dynamo.frontend --http-port ${{ variables.FRONTEND_PORT }} ${{ variables.EXTRA_FRONTEND_ARGS }}
+    resources:
+      nodes:
+        count: 1
+    probes:
+      readiness:
+        tcp_port:
+          port: ${{ variables.FRONTEND_PORT }}
+        timeout: 120
+        interval: 5
+    depends_on:
+    - nats_server
+    - etcd_server
+  - name: prefill_server
+    operator:
+      name: dynamo_sglang
+      ntasks_per_node: 1
+    replicas:
+      count: ${{ variables.NUM_CTX_SERVERS }}
+      policy: parallel
+    script:
+    - set -x
+    - echo ${CUDA_VISIBLE_DEVICES}
+    - export SGLANG_TORCH_PROFILER_DIR=${SFLOW_TASK_OUTPUT_DIR}
+    - export TORCH_DISTRIBUTED_DEFAULT_TIMEOUT="1800"
+    - export PYTHONUNBUFFERED="1"
+    - export DYN_SKIP_SGLANG_LOG_FORMATTING="1"
+    - export SGLANG_ENABLE_JIT_DEEPGEMM="false"
+    - export SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE="100000"
+    - export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT="100000"
+    - export SGLANG_DISAGGREGATION_WAITING_TIMEOUT="100000"
+    - export SGLANG_MOONCAKE_CUSTOM_MEM_POOL="True"
+    - export SGLANG_USE_MESSAGE_QUEUE_BROADCASTER="0"
+    - export SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK="1"
+    - export MC_FORCE_MNNVL="1"
+    - export NCCL_MNNVL_ENABLE="1"
+    - export NCCL_CUMEM_ENABLE="1"
+    - export CUDA_SCALE_LAUNCH_QUEUES="4x"
+    - export SGLANG_PER_TOKEN_GROUP_QUANT_8BIT_V2="1"
+    - export FIRST_CUDA_DEVICE=$(echo ${CUDA_VISIBLE_DEVICES} | cut -d',' -f1)
+    - |
+      if [ "${CTX_ENABLE_ATTENTION_DP}" == "" ]; then
+        export NODES_PER_WORKER=$(python3 -c "print(max(int(${CTX_TP_SIZE} * ${CTX_DP_SIZE} * ${CTX_PP_SIZE} // ${GPUS_PER_NODE}), 1))")
+      else
+        export NODES_PER_WORKER=$(python3 -c "print(max(int(${CTX_TP_SIZE} * ${CTX_PP_SIZE} // ${GPUS_PER_NODE}), 1))")
+      fi
+    - export NODE_RANK=${SLURM_NODEID}
+    - export FIRST_NODE_IP=$(echo ${SFLOW_TASK_ASSIGNED_NODE_IPS} | cut -d',' -f1)
+    - |
+      if [ "${NODES_PER_WORKER}" -gt 1 ]; then
+        export MULTI_NODE_EXTRA_ARGS="--dist-init-addr ${FIRST_NODE_IP}:29500 --nnodes ${NODES_PER_WORKER} --node-rank ${NODE_RANK}"
+      else
+        export MULTI_NODE_EXTRA_ARGS=""
+      fi
+    - export VLLM_NIXL_SIDE_CHANNEL_PORT=$((5557 + ${FIRST_CUDA_DEVICE}))
+    - export DYN_SYSTEM_PORT=$((8082 + ${FIRST_CUDA_DEVICE}))
+    - |
+      # Check if dynamo.sglang module exists, if not install required packages
+      if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
+        echo "dynamo.sglang not found, installing ai-dynamo packages..."
+        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.0 ai-dynamo==0.8.0
+      fi
+    - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
+      --disaggregation-mode prefill --trust-remote-code --quantization fp8 --disaggregation-transfer-backend nixl
+      --load-balance-method round_robin --mem-fraction-static 0.6 --max-prefill-tokens 8192 --chunked-prefill-size 65536
+      --context-length 9600 --max-running-requests 8 --disable-cuda-graph
+      --tensor-parallel-size 8 --data-parallel-size 8 --expert-parallel-size 1 --enable-dp-attention --enable-dp-lm-head
+      --attention-backend trtllm_mla --kv-cache-dtype fp8_e4m3 --moe-runner-backend flashinfer_trtllm --moe-dense-tp-size 1
+      --stream-interval 30 --watchdog-timeout 1000000 --enable-flashinfer-allreduce-fusion --disable-radix-cache
+      --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_PREFILL_ARGS}
+    resources:
+      gpus:
+        count: ${{ variables.CTX_TP_SIZE }}
+    depends_on:
+    - frontend_server
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: orker handler initialized
+        timeout: 900
+        interval: 10
+      failure:
+        log_watch:
+          regex_pattern: Traceback (most recent call last)
+        interval: 10
+  - name: decode_server
+    operator:
+      name: dynamo_sglang
+      ntasks_per_node: 1
+    replicas:
+      count: ${{ variables.NUM_GEN_SERVERS }}
+      policy: parallel
+    script:
+    - set -x
+    - echo ${CUDA_VISIBLE_DEVICES}
+    - export SGLANG_TORCH_PROFILER_DIR=${SFLOW_TASK_OUTPUT_DIR}
+    - export TORCH_DISTRIBUTED_DEFAULT_TIMEOUT="1800"
+    - export PYTHONUNBUFFERED="1"
+    - export DYN_SKIP_SGLANG_LOG_FORMATTING="1"
+    - export SGLANG_ENABLE_JIT_DEEPGEMM="false"
+    - export SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE="100000"
+    - export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT="100000"
+    - export SGLANG_DISAGGREGATION_WAITING_TIMEOUT="100000"
+    - export SGLANG_DECODE_BOOTSTRAP_TIMEOUT="1000"
+    - export SGLANG_MOONCAKE_CUSTOM_MEM_POOL="True"
+    - export SGLANG_USE_MESSAGE_QUEUE_BROADCASTER="0"
+    - export SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK="1"
+    - export MC_FORCE_MNNVL="1"
+    - export NCCL_MNNVL_ENABLE="1"
+    - export NCCL_CUMEM_ENABLE="1"
+    - export CUDA_SCALE_LAUNCH_QUEUES="4x"
+    - export SGLANG_PER_TOKEN_GROUP_QUANT_8BIT_V2="1"
+    - export FIRST_CUDA_DEVICE=$(echo ${CUDA_VISIBLE_DEVICES} | cut -d',' -f1)
+    - |
+      if [ "${GEN_ENABLE_ATTENTION_DP}" == "" ]; then
+        export NODES_PER_WORKER=$(python3 -c "print(max(int(${GEN_TP_SIZE} * ${GEN_DP_SIZE} * ${GEN_PP_SIZE} // ${GPUS_PER_NODE}), 1))")
+      else
+        export NODES_PER_WORKER=$(python3 -c "print(max(int(${GEN_TP_SIZE} * ${GEN_PP_SIZE} // ${GPUS_PER_NODE}), 1))")
+      fi
+    - export NODE_RANK=${SLURM_NODEID}
+    - export FIRST_NODE_IP=$(echo ${SFLOW_TASK_ASSIGNED_NODE_IPS} | cut -d',' -f1)
+    - |
+      if [ "${NODES_PER_WORKER}" -gt 1 ]; then
+        export MULTI_NODE_EXTRA_ARGS="--dist-init-addr ${FIRST_NODE_IP}:29500 --nnodes ${NODES_PER_WORKER} --node-rank ${NODE_RANK}"
+      else
+        export MULTI_NODE_EXTRA_ARGS=""
+      fi
+    - export VLLM_NIXL_SIDE_CHANNEL_PORT=$((5557 + ${FIRST_CUDA_DEVICE}))
+    - export DYN_SYSTEM_PORT=$((8082 + ${FIRST_CUDA_DEVICE}))
+    - |
+      # Check if dynamo.sglang module exists, if not install required packages
+      if ! python3 -m dynamo.sglang --help >/dev/null 2>&1; then
+        echo "dynamo.sglang not found, installing ai-dynamo packages..."
+        pip install --break-system-packages --quiet ai-dynamo-runtime==0.8.0 ai-dynamo==0.8.0
+      fi
+    - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
+      --disaggregation-mode decode --trust-remote-code --quantization fp8 --disaggregation-transfer-backend nixl
+      --mem-fraction-static 0.75 --context-length 9600 --max-running-requests 1024 --cuda-graph-max-bs 1024
+      --tensor-parallel-size 8 --data-parallel-size 8 --expert-parallel-size 8 --enable-dp-attention --enable-dp-lm-head
+      --attention-backend trtllm_mla --kv-cache-dtype fp8_e4m3 --moe-runner-backend flashinfer_trtllm --moe-dense-tp-size 1
+      --stream-interval 30 --watchdog-timeout 1000000 --enable-flashinfer-allreduce-fusion --disable-radix-cache
+      --disaggregation-bootstrap-port $((8998 + ${FIRST_CUDA_DEVICE})) ${MULTI_NODE_EXTRA_ARGS} --host 0.0.0.0 ${EXTRA_DECODE_ARGS}
+    resources:
+      gpus:
+        count: ${{ variables.GEN_TP_SIZE }}
+    depends_on:
+    - frontend_server
+    probes:
+      readiness:
+        log_watch:
+          regex_pattern: orker handler initialized
+        timeout: 900
+        interval: 10
+      failure:
+        log_watch:
+          regex_pattern: Traceback (most recent call last)
+        interval: 10
+  - name: benchmark
+    operator:
+      name: aiperf
+      ntasks: 1
+    script:
+    - set -x
+    - export CONCURRENCY=1024
+    - |
+      python3 /workspace/utils/bench_serving/benchmark_serving.py  \
+        --model ${{ variables.SERVED_MODEL_NAME }} \
+        --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} \
+        --backend openai-chat \
+        --base-url http://${{ variables.HEAD_NODE_IP }}:8000 \
+        --endpoint /v1/chat/completions \
+        --use-chat-template \
+        --dataset-name random \
+        --seed 100 \
+        --random-input-len ${{ variables.ISL }} \
+        --random-output-len ${{ variables.OSL }} \
+        --random-range-ratio 1.0 \
+        --num-prompts $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) \
+        --max-concurrency ${CONCURRENCY} \
+        --request-rate inf \
+        --ignore-eos \
+        --save-result \
+        --num-warmups "$((1 * ${CONCURRENCY}))" \
+        --percentile-metrics 'ttft,tpot,itl,e2el' \
+        --result-dir ${SFLOW_TASK_OUTPUT_DIR} \
+        --result-filename prefill_benchmark_serving_isl_${{ variables.ISL }}_osl_${{ variables.OSL }}_concurrency_${CONCURRENCY}.json \
+        --profile --pd-separated --profile-prefill-url http://${{ task.prefill_server[0].nodes[0].ip_address }}:8082 http://${{ task.prefill_server[1].nodes[0].ip_address }}:8082 http://${{ task.prefill_server[2].nodes[0].ip_address }}:8082 --profile-start-step 1500 --profile-num-steps 10
+      mkdir -p ${SFLOW_TASK_OUTPUT_DIR}/profile/prefill_server_0
+      mv ${SFLOW_WORKFLOW_OUTPUT_DIR}/prefill_server_0/*.trace.json.gz ${SFLOW_TASK_OUTPUT_DIR}/profile/prefill_server_0/
+      mkdir -p ${SFLOW_TASK_OUTPUT_DIR}/profile/prefill_server_1
+      mv ${SFLOW_WORKFLOW_OUTPUT_DIR}/prefill_server_1/*.trace.json.gz ${SFLOW_TASK_OUTPUT_DIR}/profile/prefill_server_1/
+      mkdir -p ${SFLOW_TASK_OUTPUT_DIR}/profile/prefill_server_2
+      mv ${SFLOW_WORKFLOW_OUTPUT_DIR}/prefill_server_2/*.trace.json.gz ${SFLOW_TASK_OUTPUT_DIR}/profile/prefill_server_2/
+      python3 /workspace/utils/bench_serving/benchmark_serving.py  \
+        --model ${{ variables.SERVED_MODEL_NAME }} \
+        --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} \
+        --backend openai-chat \
+        --base-url http://${{ variables.HEAD_NODE_IP }}:8000 \
+        --endpoint /v1/chat/completions \
+        --use-chat-template \
+        --dataset-name random \
+        --seed 100 \
+        --random-input-len ${{ variables.ISL }} \
+        --random-output-len ${{ variables.OSL }} \
+        --random-range-ratio 1.0 \
+        --num-prompts $((${{ variables.MULTI_ROUND }}*${CONCURRENCY})) \
+        --max-concurrency ${CONCURRENCY} \
+        --request-rate inf \
+        --ignore-eos \
+        --save-result \
+        --num-warmups "$((1 * ${CONCURRENCY}))" \
+        --percentile-metrics 'ttft,tpot,itl,e2el' \
+        --result-dir ${SFLOW_TASK_OUTPUT_DIR} \
+        --result-filename decode_benchmark_serving_isl_${{ variables.ISL }}_osl_${{ variables.OSL }}_concurrency_${CONCURRENCY}.json \
+        --profile --pd-separated --profile-decode-url http://${{ task.decode_server[0].nodes[0].ip_address }}:8082 --profile-start-step 1500 --profile-num-steps 10
+      mkdir -p ${SFLOW_TASK_OUTPUT_DIR}/profile/decode_server_0
+      mv ${SFLOW_WORKFLOW_OUTPUT_DIR}/decode_server_0/*.trace.json.gz ${SFLOW_TASK_OUTPUT_DIR}/profile/decode_server_0/
+    resources:
+      nodes:
+        indices:
+        - 0
+    depends_on:
+    - prefill_server
+    - decode_server
+    - frontend_server

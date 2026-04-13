@@ -461,9 +461,9 @@ workflow:
       python3 /workspace/utils/bench_serving/benchmark_serving.py  \
         --model ${{ variables.SERVED_MODEL_NAME }} \
         --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} \
-        --backend openai-chat \
+        --backend dynamo \
         --base-url http://${{ variables.HEAD_NODE_IP }}:8000 \
-        --endpoint /v1/chat/completions \
+        --endpoint /v1/completions \
         --use-chat-template \
         --dataset-name random \
         --seed 100 \
@@ -485,9 +485,9 @@ workflow:
       python3 /workspace/utils/bench_serving/benchmark_serving.py  \
         --model ${{ variables.SERVED_MODEL_NAME }} \
         --tokenizer ${{ artifacts.LOCAL_MODEL_PATH.path }} \
-        --backend openai-chat \
+        --backend dynamo \
         --base-url http://${{ variables.HEAD_NODE_IP }}:8000 \
-        --endpoint /v1/chat/completions \
+        --endpoint /v1/completions \
         --use-chat-template \
         --dataset-name random \
         --seed 100 \

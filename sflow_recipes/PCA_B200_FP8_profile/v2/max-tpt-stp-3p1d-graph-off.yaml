@@ -358,7 +358,7 @@ workflow:
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode prefill --trust-remote-code --quantization fp8 --disaggregation-transfer-backend nixl
       --load-balance-method round_robin --mem-fraction-static 0.6 --max-prefill-tokens 8192 --chunked-prefill-size 65536
-      --context-length 65536 --max-running-requests 8 --disable-cuda-graph
+      --context-length 9600 --max-running-requests 8 --disable-cuda-graph
       --tensor-parallel-size 8 --data-parallel-size 8 --expert-parallel-size 1 --enable-dp-attention --enable-dp-lm-head
       --attention-backend trtllm_mla --kv-cache-dtype fp8_e4m3 --moe-runner-backend flashinfer_trtllm --moe-dense-tp-size 1
       --stream-interval 30 --watchdog-timeout 1000000 --enable-flashinfer-allreduce-fusion --disable-radix-cache
@@ -430,7 +430,7 @@ workflow:
       fi
     - python3 -m dynamo.sglang --model-path ${{ artifacts.LOCAL_MODEL_PATH.path }} --served-model-name ${SERVED_MODEL_NAME}
       --disaggregation-mode decode --trust-remote-code --quantization fp8 --disaggregation-transfer-backend nixl
-      --mem-fraction-static 0.75 --context-length 65536 --max-running-requests 1024
+      --mem-fraction-static 0.75 --context-length 9600 --max-running-requests 1024
       --tensor-parallel-size 8 --data-parallel-size 8 --expert-parallel-size 8 --enable-dp-attention --enable-dp-lm-head
       --attention-backend trtllm_mla --kv-cache-dtype fp8_e4m3 --moe-runner-backend flashinfer_trtllm --moe-dense-tp-size 1
       --stream-interval 30 --watchdog-timeout 1000000 --enable-flashinfer-allreduce-fusion --disable-radix-cache
